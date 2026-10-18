@@ -1,0 +1,39 @@
+package thunder.hack.utility;
+
+import static thunder.hack.core.manager.IManager.mc;
+
+public class TickTimer {
+    private int time;
+
+    public TickTimer() {
+        reset();
+    }
+
+    public boolean passedTicks(long t) {
+        if (getPassedTicks() < 0)
+            reset();
+        return getPassedTicks() >= t;
+    }
+
+    public boolean every(long ms) {
+        if (getPassedTicks() < 0)
+            reset();
+        boolean passed = getPassedTicks() >= ms;
+        if (passed)
+            reset();
+        return passed;
+    }
+
+    public void set(int t) {
+        time = t;
+    }
+
+    public void reset() {
+        // mc itself is null during ModuleManager static init (before MinecraftClient is set)
+        time = (mc == null || mc.player == null) ? 0 : mc.player.age;
+    }
+
+    private int getPassedTicks() {
+        return (mc == null || mc.player == null) ? 0 : mc.player.age - time;
+    }
+}

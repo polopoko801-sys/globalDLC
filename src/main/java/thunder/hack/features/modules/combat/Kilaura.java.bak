@@ -1,0 +1,1588 @@
+package thunder.hack.features.modules.combat;
+
+import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.entity.passive.VillagerEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.Items;
+import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import net.minecraft.network.packet.s2c.play.EntityPositionSyncS2CPacket;
+import net.minecraft.network.packet.s2c.play.EntityS2CPacket;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
+import thunder.hack.core.Core;
+import thunder.hack.core.Managers;
+import thunder.hack.core.rotation.PlayerRotationController;
+import thunder.hack.core.manager.client.ModuleManager;
+import thunder.hack.events.impl.EventPostSync;
+import thunder.hack.events.impl.EventSync;
+import thunder.hack.events.impl.PlayerUpdateEvent;
+import thunder.hack.features.modules.Module;
+import thunder.hack.setting.Setting;
+import thunder.hack.setting.impl.SettingGroup;
+import thunder.hack.utility.Timer;
+import thunder.hack.utility.math.MathUtility;
+import thunder.hack.utility.render.Render2DEngine;
+import thunder.hack.utility.render.TextureStorage;
+import net.minecraft.util.Identifier;
+import thunder.hack.utility.render.Render3DEngine;
+import thunder.hack.utility.render.animation.CaptureMark;
+
+import java.util.concurrent.ThreadLocalRandom;
+
+/**
+ * Port zachowania Aury z WildClienta (dev.client) na silnik ThunderHacka 1.21.11.
+ * Logika (celowanie ReallyWorld, filtry, elytra+firework, shieldbreaker, offsprint, makeboost)
+ * odwzorowana 1:1, ale zapięta na Setting<> + EventBus TH zamiast frameworka WildClienta.
+ */
+public class Kilaura extends Module {
+
+    public final Setting<Float> preaim = new Setting<>("PreAim", 0.5f, 0f, 2f);
+    public final Setting<Float> distance = new Setting<>("Distance", 3f, 3f, 6f);
+    public final Setting<Float> smooth = new Setting<>("Smooth", 0.45f, 0.1f, 1f);
+    public final Setting<Rotate> rotate = new Setting<>("Rotate", Rotate.AimAssist);
+
+    /** Everything about HOW the aura turns - collapsed into one group so the module list is not a wall of toggles. */
+    public final Setting<SettingGroup> rotationGroup = new Setting<>("Rotation", new SettingGroup(false, 0));
+    /**
+     * Spins your BODY on the spot while the camera stays exactly where you put it.
+     *
+     * <p>This is the separation from the rotation split doing its job: the model turns, the camera does
+     * not, and a click still goes where you are looking. Camera east, body spinning, click east.
+     *
+     * <p>It only drives {@link PlayerRotationController}; the spin itself lives there, shared with the
+     * AimCamera module, so there is one implementation and the two cannot disagree about the angle.
+     */
+    public final Setting<Boolean> spinBody = new Setting<>("Spinning", false).addToGroup(rotationGroup);
+    public final Setting<Float> spinSpeed = new Setting<>("SpinSpeed", 360f, 20f, 36000f, v -> spinBody.getValue()).addToGroup(rotationGroup);
+    /**
+     * Visual-only lock: the rotation towards the target goes out in the movement packets, so the server and
+     * everyone around you see you glued to the target, while your own view stays 100% yours AND the aura
+     * stops attacking on its own — clicks hit whatever you are really looking at. Top-level (not inside
+     * Options) because it overrides Rotate/CameraTarget.
+     */
+    public final Setting<Boolean> oTargetLock = new Setting<>("TargetLock", false);
+    /**
+     * Vanilla sends the attack BEFORE the movement/look packet (it happens in handleInputEvents, before the
+     * tick). We used to fire it from EventPostSync - AFTER the look packet - which reverses that order and is
+     * exactly GrimAC's "PacketOrderE: attacking=true" flag. On = fire at EventSync (before the look packet),
+     * matching vanilla order. The hit then uses last tick's rotation, but a locked aura is already on target
+     * last tick, so reg is unaffected. Off = old PostSync behaviour for servers with no such check.
+     */
+    public final Setting<Boolean> grimOrder = new Setting<>("GrimPacketOrder", true).addToGroup(rotationGroup);
+    /** Largest angle the silent rotation may cover in one tick — instant 180° snaps get flagged. */
+    public final Setting<Float> maxTurn = new Setting<>("MaxTurn", 60f, 10f, 180f).addToGroup(rotationGroup);
+    // Humaniser ported from the Rockstar aura: a drifting Perlin offset on the aim that fades out as you line up,
+    // so AimAssist moves like a hand instead of snapping on a rail. Visual-ish but also softens the rotation flags.
+    public final Setting<Boolean> humanize = new Setting<>("Humanize", false).addToGroup(rotationGroup);
+    public final Setting<Float> humanAmount = new Setting<>("HumanAmount", 6f, 0f, 20f, v -> humanize.getValue()).addToGroup(rotationGroup);
+    /**
+     * Silent aim only around the hit: the server sees your own look until a swing is ready, then the
+     * rotation turns onto the target, stays there for SnapTicks after the hit and walks back to your look.
+     * Both turns are capped by MaxTurn, so neither the snap in nor the return is a one-tick 180°.
+     */
+    public final Setting<Boolean> snap = new Setting<>("SnapRotations", false, v -> !oTargetLock.getValue()).addToGroup(rotationGroup);
+    /** Ticks after a hit that the rotation stays on the target before it heads back. */
+    public final Setting<Integer> snapTicks = new Setting<>("SnapTicks", 5, 1, 15, v -> snap.getValue() && !oTargetLock.getValue()).addToGroup(rotationGroup);
+    /** Only swing once the rotation we already SENT points at the target (packet order: look, then hit). */
+    public final Setting<Boolean> aimBeforeHit = new Setting<>("AimBeforeHit", true).addToGroup(rotationGroup);
+    /**
+     * Stop feeding the server the aim rotation while you are right-clicking or have a screen open. Without
+     * this the server sees you facing the target when the interaction packet arrives, and chests, ender
+     * chests and crafting tables simply refuse to open.
+     */
+    public final Setting<Boolean> pauseOnUse = new Setting<>("PauseOnUse", true).addToGroup(rotationGroup);
+    /** Reticle drawn straight on the locked target, so you can see what the lock is holding. */
+    public final Setting<Boolean> lockCrosshair = new Setting<>("LockCrosshair", true, v -> oTargetLock.getValue());
+    /** With the lock on, aim at the head instead of the middle of the body. */
+    public final Setting<Boolean> lockHead = new Setting<>("LockHead", true, v -> oTargetLock.getValue());
+    /**
+     * Jumped? Then hold the swing until you are on the way down — that is the only part of a jump that
+     * crits. On the ground it hits normally, so nothing is lost by leaving this on.
+     */
+    public final Setting<Boolean> autoCrit = new Setting<>("AutoCrit", true);
+    public final Setting<AimPoint> aimPoint = new Setting<>("AimPoint", AimPoint.Nearest);
+    public final Setting<Boolean> targetEsp = new Setting<>("TargetEsp", true);
+    // target ESP style ported from Aura
+    public final Setting<Esp> espMode = new Setting<>("EspMode", Esp.Cloudan, v -> targetEsp.getValue());
+    /**
+     * Sync takes the client accent, so setting the client blue turns the marker blue with everything
+     * else. Custom is there for a marker that is deliberately not the accent - a colour that stands out
+     * against the one your HUD is already using.
+     */
+    public final Setting<EspColorMode> espColorMode = new Setting<>("EspColorMode", EspColorMode.Sync, v -> targetEsp.getValue());
+    public final Setting<thunder.hack.setting.impl.ColorSetting> espCustomColor = new Setting<>("EspColor",
+            new thunder.hack.setting.impl.ColorSetting(0xFF4DA6FF), v -> targetEsp.getValue() && espColorMode.getValue() == EspColorMode.Custom);
+    /** How many shards orbit the target in GombalV3. */
+    public final Setting<Integer> espShards = new Setting<>("EspShards", 7, 1, 20, v -> targetEsp.getValue() && espMode.getValue() == Esp.GombalV3);
+    /**
+     * How high GombalV3 rides, as a fraction of the target-s height.
+     *
+     * <p>It used to orbit from the ankles up, where the target-s own body hides the near half of it.
+     * Raised to chest height it reads at a glance and stays clear of the ground.
+     */
+    public final Setting<Float> espHeight = new Setting<>("EspHeight", 0.45f, 0f, 1.5f, v -> targetEsp.getValue() && espMode.getValue() == Esp.GombalV3);
+    private final Setting<Float> espScale = new Setting<>("EspScale", 1f, 0.4f, 3f, v -> targetEsp.getValue() && (espMode.getValue() == Esp.Cloudan || espMode.getValue() == Esp.GombalV3));
+    private final Setting<Boolean> espThroughWalls = new Setting<>("EspThroughWalls", true, v -> targetEsp.getValue() && (espMode.getValue() == Esp.Cloudan || espMode.getValue() == Esp.GombalV3));
+    public final Setting<SettingGroup> espGroup = new Setting<>("EspSettings", new SettingGroup(false, 0), v -> targetEsp.getValue() && espMode.is(Esp.GombalV2));
+    public final Setting<Integer> espLength = new Setting<>("EspLength", 14, 1, 40).addToGroup(espGroup);
+    public final Setting<Integer> espFactor = new Setting<>("EspFactor", 8, 1, 20).addToGroup(espGroup);
+    public final Setting<Float> espShaking = new Setting<>("EspShaking", 1.8f, 1.5f, 10f).addToGroup(espGroup);
+    public final Setting<Float> espAmplitude = new Setting<>("EspAmplitude", 3f, 0.1f, 8f).addToGroup(espGroup);
+
+    /*   TARGETS   */
+    public final Setting<SettingGroup> targets = new Setting<>("Targets", new SettingGroup(false, 0));
+    public final Setting<Boolean> tPlayers = new Setting<>("Players", true).addToGroup(targets);
+    public final Setting<Boolean> tNakeds = new Setting<>("Nakeds", false).addToGroup(targets);
+    public final Setting<Boolean> tMobs = new Setting<>("Mobs", false).addToGroup(targets);
+    public final Setting<Boolean> tAnimals = new Setting<>("Animals", false).addToGroup(targets);
+    public final Setting<Boolean> tNakedInvis = new Setting<>("NakedInvisibles", false).addToGroup(targets);
+    public final Setting<Boolean> tInvis = new Setting<>("Invisibles", false).addToGroup(targets);
+    public final Setting<Boolean> tVillager = new Setting<>("Villager", false).addToGroup(targets);
+    public final Setting<Boolean> tBots = new Setting<>("Bots", false).addToGroup(targets);
+
+    /*   SORT   */
+    public final Setting<Sort> sort = new Setting<>("Sort", Sort.Distance);
+
+    /**
+     * Ceiling on how often the aura may swing. The weapon cooldown gate above still applies, so with a sword
+     * this changes nothing — it only matters for weapons that recharge faster than you set here. It used to
+     * be hardcoded at ~2.3 CPS, which quietly ate attack windows on fast weapons.
+     */
+    public final Setting<Float> cps = new Setting<>("CPS", 8f, 1f, 20f);
+
+    /*   OPTIONS   */
+    public final Setting<SettingGroup> options = new Setting<>("Options", new SettingGroup(false, 0));
+    // duele na anarchii: cel za rogiem/ścianą ma dalej być bity, więc Walls jest domyślnie ON.
+    // (Walls is gone: ThroughWalls at the top of the module is the one switch that decides this now.)
+    public final Setting<Boolean> oOnlyCrit = new Setting<>("OnlyCrit", false).addToGroup(options);
+    public final Setting<Boolean> oNoEatAttack = new Setting<>("NoEatAttack", false).addToGroup(options);
+    public final Setting<Boolean> oElytraTarget = new Setting<>("ElytraTarget", false).addToGroup(options);
+    public final Setting<Boolean> oOffSprint = new Setting<>("OffSprint", false).addToGroup(options);
+    public final Setting<Boolean> oShieldBreaker = new Setting<>("ShieldBreaker", false).addToGroup(options);
+    public final Setting<Boolean> oStopUseItem = new Setting<>("StopUseItem", false).addToGroup(options);
+    public final Setting<Boolean> oMakeBoost = new Setting<>("MakeBoost", false).addToGroup(options);
+    // trzymaj ten sam cel dopóki jest ważny — bez tego aura przeskakuje, gdy przeciwnik wejdzie za blok
+    public final Setting<Boolean> oSaveTarget = new Setting<>("SaveTarget", true).addToGroup(options);
+    /**
+     * AimAssist brings the crosshair onto the target once; from then on the target is "saved" and held the
+     * Silent way (as with Rotate Silent + TargetLock off) - the camera is yours again while the aura keeps
+     * turning to and hitting that player for the server, until the target is lost or changes.
+     */
+    public final Setting<Boolean> saveLock = new Setting<>("SaveLock", false,
+            v -> rotate.getValue() == Rotate.AimAssist).addToGroup(options);
+    /** The target SaveLock has already pulled the camera onto - held silently from then on. */
+    private LivingEntity savedLock;
+    /** The ESP's own subject, kept a moment after the target leaves range so the marker can animate out. */
+    private LivingEntity espSubject;
+    private long espExitStart;
+    private static final long ESP_EXIT_MS = 650L;
+    public final Setting<Boolean> oCameraTarget = new Setting<>("CameraTarget", false).addToGroup(options);
+
+    /*   BACKTRACK   */
+    /**
+     * Hold the target's movement packets for a moment, so you fight the position they were at.
+     *
+     * <p>Only the current target's position packets are ever held, only while the aura actually has
+     * that target, and only for the configured number of milliseconds. Everything held is applied in
+     * the order it arrived - nothing is dropped, reordered or edited, so the client ends up in exactly
+     * the state it would have without this, just later. Your own packets are never touched.
+     */
+    public final Setting<SettingGroup> backtrack = new Setting<>("Backtrack", new SettingGroup(false, 0));
+    public final Setting<Boolean> btEnabled = new Setting<>("BacktrackEnabled", false).addToGroup(backtrack);
+    /** Milliseconds to hold for. Capped low on purpose: past a couple of hundred it is just teleporting. */
+    public final Setting<Integer> btDelay = new Setting<>("BacktrackDelay", 100, 20, 400).addToGroup(backtrack);
+    /** Draw a box where the target really is, so what is being held back is never invisible. */
+    public final Setting<Boolean> btRender = new Setting<>("BacktrackRender", true).addToGroup(backtrack);
+
+    /*   WALL EXPLOIT   */
+    /**
+     * Sending the hit through a wall was never the problem — the client already does that. What kills it is
+     * that the rotation we send points straight into the block, so anything doing a line-of-sight check
+     * server-side throws the packet away. These two tricks fix exactly that:
+     * <p>
+     * SmartAim — instead of the middle of the body, aim at whichever corner of the target's hitbox actually
+     * has a clear line from your eyes (over a fence, past a corner, through the gap in a door / slab / stairs).
+     * The swing then passes an LOS check because it genuinely has line of sight.
+     * <p>
+     * PosSpoof — when nothing on the hitbox is visible from where you stand, nudge the position that the
+     * SERVER holds by a few tenths of a block (a legal one-tick move, no rubberband) to a spot that does see
+     * the target, fire the hit from there, then send the real position straight back. The server checks the
+     * hit against the peeked position and lets it through; you never actually move.
+     * <p>
+     * Both run off this one switch — there is nothing here to tune, and nothing to read off the ArrayList.
+     */
+    public final Setting<Boolean> throughWalls = new Setting<>("ThroughWalls", true);
+
+    /**
+     * Widest nudge of the server-side position. Kept small deliberately: a whole block moved and taken back
+     * inside one tick is a teleport to anything watching, and vanilla itself answers a peek that ends inside
+     * a block with a setback. Anything that only works at a full block was never going to survive anyway.
+     */
+    private static final double SPOOF_RADIUS = 0.45;
+
+    public final Setting<Boolean> smartCrits = new Setting<>("SmartCrits", false, v -> oOnlyCrit.getValue());
+    public final Setting<Boolean> miniJump = new Setting<>("MiniJump", false, v -> oOnlyCrit.getValue());
+    public final Setting<Boolean> autoFireWork = new Setting<>("AutoFirework", false, v -> oElytraTarget.getValue());
+    public final Setting<Float> fireworkCooldown = new Setting<>("FireworkCooldown", 1500f, 500f, 3000f, v -> oElytraTarget.getValue() && autoFireWork.getValue());
+    public final Setting<Boolean> betterTarget = new Setting<>("BetterTarget", false, v -> oElytraTarget.getValue());
+    public final Setting<Float> elytraDistance = new Setting<>("ElytraDistance", 15f, 10f, 30f, v -> oElytraTarget.getValue());
+
+    private LivingEntity target;
+    private boolean rotating;   // czy w tym ticku faktycznie celujemy (do aim-assist / silent)
+    private boolean rotationApplied; // silent obrót siedzi na graczu i czeka na przywrócenie
+    private float savedYaw, savedPitch;
+    private float sentYaw, sentPitch; // ostatnia rotacja WYSŁANA do serwera
+    private boolean sentValid;
+    private boolean spaceJump, wasOnGround; // czy jesteśmy w powietrzu z WŁASNEGO skoku
+    private boolean attackQueued;   // cios czeka na wysłanie rotacji
+    private long lastJumpPress;
+    /** SnapRotations: a swing is ready this tick (cooldown, reach, crit) — time to turn onto the target. */
+    private boolean hitReady;
+    /** SnapRotations: ticks since the last hit; the rotation holds the target while this is <= SnapTicks. */
+    private int ticksSinceHit = Integer.MAX_VALUE;
+    /** PauseOnUse is holding the rotation back this tick (right-click / open screen). */
+    private boolean interacting;
+    /** The rotation sent before the current one, so the F5 model can glide between ticks instead of stepping. */
+    private float prevSentYaw, prevSentPitch;
+    /** A silent rotation went out this tick — the F5 model should show it (cleared at the head of every tick). */
+    private boolean silentLive;
+
+    private final Timer fireWork = new Timer();
+    private final Timer attackTimer = new Timer();
+
+    // stan punktów celowania z evaware
+    private Vec3d dvdPoint = Vec3d.ZERO;
+    private Vec3d dvdMotion = Vec3d.ZERO;
+    private float hitCount;
+
+    /**
+     * Punkt celowania liczony RAZ na tick i trzymany jako offset od pozycji celu — dzięki temu między
+     * klatkami jedzie razem z celem (aim-assist chodzi per klatka, więc sztywny punkt ze środka ticka
+     * zostawał za strafującym przeciwnikiem), a punkty stanowe (DVD/SpookyTime) przesuwają się dokładnie
+     * raz na tick zamiast z prędkością FPS-ów.
+     */
+    private Vec3d aimOffset = Vec3d.ZERO;
+    private boolean aimOffsetValid;
+    /** Nic na hitboksie nie jest widoczne — celujemy w czubek głowy (stary trik z Aury). */
+    private boolean wallBlind;
+    /** Czy w tym ticku aura w ogóle steruje rotacją (jest cel, nie ma pauzy, Rotate != Off). */
+    private boolean aimActive;
+
+    /** Czas ostatniej klatki aim-assista — Smooth ma znaczyć to samo przy 60 i przy 300 fps. */
+    private long lastAimNanos;
+    private thunder.hack.utility.math.PerlinNoise aimNoise = new thunder.hack.utility.math.PerlinNoise();
+    private long humanStart = System.currentTimeMillis();
+
+    /** Kierunki, w które próbujemy „wychylić" pozycję wysyłaną do serwera, gdy cel jest za ścianą. */
+    private static final Vec3d[] PEEK_DIRS = {
+            new Vec3d(1, 0, 0), new Vec3d(-1, 0, 0), new Vec3d(0, 0, 1), new Vec3d(0, 0, -1),
+            new Vec3d(0.707, 0, 0.707), new Vec3d(0.707, 0, -0.707),
+            new Vec3d(-0.707, 0, 0.707), new Vec3d(-0.707, 0, -0.707)
+    };
+
+    public Kilaura() {
+        super("Kilaura", Category.COMBAT);
+    }
+
+    @Override
+    public String getDisplayInfo() {
+        if (target == null) return null;
+
+        // The held count is shown while backtrack is on, because "is it doing anything" is otherwise
+        // invisible: a feature that delays packets looks identical to one that is switched off.
+        String name = target.getName().getString();
+        return btEnabled.getValue() ? name + " " + heldMoves.size() : name;
+    }
+
+    @Override
+    public void onEnable() {
+        releaseMoves();
+        // No mc.player access here: modules get enabled while a config loads, which happens with no player
+        // in the world — the old onEnable read the player's yaw and took the whole load down with an NPE.
+        target = null;
+        aimOffsetValid = false;
+        wallBlind = false;
+        aimActive = false;
+        // start the sent-rotation chain from where we actually look, not from a stale angle
+        sentValid = false;
+        rotationApplied = false;
+        lastAimNanos = 0L;
+    }
+
+    @Override
+    public void onDisable() {
+        if (mc.player != null) restoreRotation();
+        releaseMoves();
+        PlayerRotationController.mode = PlayerRotationController.SpinMode.Off;
+        PlayerRotationController.reset();
+        target = null;
+        aimOffsetValid = false;
+        wallBlind = false;
+        aimActive = false;
+        ModuleManager.rotations.fixRotation = Float.NaN;
+    }
+
+    @EventHandler
+    @SuppressWarnings("unused")
+    public void onBacktrackTick(thunder.hack.events.impl.EventTick event) {
+        tickBacktrack();
+    }
+
+    @EventHandler
+    public void onUpdate(PlayerUpdateEvent e) {
+        // safety net: if last tick's silent rotation never got undone, undo it now before anything else
+        // reads the player's look (movement included)
+        restoreRotation();
+        trackJump();
+        if (ticksSinceHit < Integer.MAX_VALUE) ticksSinceHit++;
+        hitReady = false;
+        silentLive = false;
+
+        // Insurance for the swing queue. The attack is fired from EventPostSync, which mixin only reaches if
+        // the sync event was NOT cancelled — cancel it at HEAD (ElytraPlus already does) and the RETURN
+        // inject is skipped entirely, so the queued hit sits there and the aura looks stone dead. If a queued
+        // swing survived into the next tick, postSync never ran: fire it here rather than lose it.
+        if (attackQueued) {
+            attackQueued = false;
+            if (target != null && mc.interactionManager != null && aimGateOpen())
+                performAttack();
+        }
+
+        // SaveLock forgets the saved target as soon as it is gone or replaced
+        if (savedLock != null && (target != savedLock || !savedLock.isAlive())) savedLock = null;
+
+        rotating = false;
+
+        // TargetLock trzyma raz wybrany cel na amen. SaveTarget trzyma go tylko dopóki DA SIĘ go bić —
+        // inaczej wystarczyło, że przeciwnik odskoczy o pół bloku poza zasięg, żeby aura wisiała na nim
+        // i ignorowała gościa, który wali Cię z buta tuż obok.
+        boolean holding = target != null && isValid(target) && (oSaveTarget.getValue() || oTargetLock.getValue());
+        if (!holding || (!oTargetLock.getValue() && boxDistance(target) > distance.getValue()))
+            updateTarget();
+
+        // Zanim cokolwiek policzy kąt: wybierz punkt celowania, który NIE jest zasłonięty blokiem.
+        updateAim();
+
+        boolean elytra = mc.player.isGliding();
+
+        if (elytra && target != null && oElytraTarget.getValue() && autoFireWork.getValue()
+                && fireWork.passedMs((long) (float) fireworkCooldown.getValue())) {
+            sendFireWork();
+            fireWork.reset();
+        }
+
+        // Right-clicking or a screen being open means you are interacting with the world: keep feeding the
+        // server your aim rotation and it will reject the interaction (a chest you are "not looking at"
+        // never opens). Hold the rotation back for those moments; the target itself is kept.
+        interacting = pauseOnUse.getValue()
+                && (mc.currentScreen != null || (mc.options != null && mc.options.useKey.isPressed()));
+
+        if (target != null) {
+            // The crit micro-hop adds Y velocity the server never predicted (you pressed no jump) -> GrimAC
+            // SimulationA ("coś z chodzeniem"). Skip it under GrimPacketOrder; on vanilla/NCP it is fine.
+            if (oOnlyCrit.getValue() && miniJump.getValue() && !grimOrder.getValue()
+                    && mc.player.getAttackCooldownProgress(2f) == 1f
+                    && mc.player.isOnGround()) {
+                mc.player.addVelocity(0, 0.04, 0);
+            }
+
+            // PauseOnUse is meant to hold back the ROTATION only — that is all a chest needs. It was also
+            // skipping the attack, so simply holding right-click (shield, bow, eating, any block placement)
+            // switched the whole aura off. In a fight your right button is down half the time, which is a
+            // very large share of "it doesn't hit". Now only the aiming pauses; swings keep coming, and the
+            // rayHitsTarget gate makes sure they only land on whoever you are genuinely facing.
+            rotating = !interacting;
+            // Is the aura steering the crosshair this tick at all? With Rotate=Off, or while PauseOnUse
+            // holds the rotation back, it is not — and then demanding that the look already points at the
+            // target (AimBeforeHit) can never be satisfied, so every single swing gets thrown away by our
+            // own gate. That is what "it doesn't hit" looks like from the outside.
+            // The body spin is decided in AimCamera.tick, which runs whether or not this module does -
+            // deciding it here meant nothing cleared it once the aura was switched off.
+
+            aimActive = rotating && effectiveRotate() != Rotate.Off;
+
+            if (!oNoEatAttack.getValue() || !isUsingItems())
+                attack();
+        } else {
+            rotating = false;
+            aimActive = false;
+        }
+
+        // CameraTarget: przejmij cel z tego, na kogo patrzysz. Podmiana idzie PO updateAim(), więc offset
+        // celowania należy jeszcze do poprzedniego celu — trzeba go przeliczyć, inaczej przez jeden tick
+        // celujemy w nowego przeciwnika punktem wyliczonym dla starego.
+        if (oCameraTarget.getValue() && mc.targetedEntity instanceof LivingEntity living
+                && target != living && isValid(living)) {
+            target = living;
+            updateAim();
+        }
+
+        // Move correction. In SILENT the server yaw (the aura's aim) is put on the player while the movement
+        // packet is built, and travel reads the player yaw - so WASD walked towards the TARGET, not where the
+        // camera points, the moment you looked away. Feeding the real camera yaw to the move-fix makes walking
+        // follow the camera again. AimAssist already turns the real camera, so it needs no correction.
+        if (effectiveRotate() == Rotate.Silent && rotating && target != null && !mc.player.isGliding())
+            ModuleManager.rotations.fixRotation = mc.player.getYaw();
+        else
+            ModuleManager.rotations.fixRotation = Float.NaN;
+    }
+
+    // CameraTarget: celuje w to na co patrzysz. Z Rotate=Silent obraca głowę TYLKO dla serwera
+    // (model/headYaw idą na cel, kamera gracza przywracana), więc wizualnie się nie kręcisz.
+    private Rotate effectiveRotate() {
+        // TargetLock jest przelacznikiem WIDOCZNOSCI, nie tego, czy aura celuje.
+        //
+        // WLACZONY  = widoczny lock: kamera trzyma sie celu, wiec widzisz, ze dziala.
+        // WYLACZONY = silent: obrot leci TYLKO do serwera (pakiet + model), a kamera jest przywracana po
+        //             wyslaniu, wiec serwer ma peelny aim-assist i trafia, a Ty nic nie czujesz.
+        //
+        // Tak to bylo chciane: "targetlock off = dla serwera aim-assist, ale ja tego nie widze".
+        if (oTargetLock.getValue())
+            return Rotate.AimAssist;
+
+        // Rotate.Off zostaje honorowane, bo to jedyny sposob, zeby aura wcale nie ruszala katow - gdyby
+        // TargetLock=off wymuszal Silent bezwarunkowo, ta opcja przestalaby istniec.
+        if (rotate.getValue() == Rotate.Off)
+            return Rotate.Off;
+
+        // Rotate = AimAssist has to mean what it says even with the lock off: the camera glides onto the
+        // target. Forcing Silent here whenever TargetLock was off silently ignored the user's own choice -
+        // "AimAssist on, and it does not turn towards the player even when I look the other way".
+        if (rotate.getValue() == Rotate.AimAssist) {
+            // SaveLock ("save camera"): AimAssist glides the camera ONTO the target once (you see the snap), then
+            // once it has arrived (savedLock set) the camera is FREED - from there the aim is Silent (server/body
+            // keep tracking, your view is your own). That is the whole point of "save camera", and it is distinct
+            // from plain Silent because you see the initial lock-on.
+            if (saveLock.getValue() && target != null && target == savedLock)
+                return Rotate.Silent;
+            return Rotate.AimAssist;
+        }
+
+        // Rotate = Silent: rotation only for the server and the model, the camera stays yours.
+        return Rotate.Silent;
+    }
+
+    /** Środek głowy: tuż pod czubkiem hitboxu, lekko przesunięty w dół, żeby nie ocierać o krawędź. */
+    private Vec3d headPoint(LivingEntity entity) {
+        Box box = entity.getBoundingBox();
+        double headY = box.maxY - Math.min(0.22, entity.getHeight() * 0.12);
+        return new Vec3d(entity.getX(), headY, entity.getZ());
+    }
+
+    // Kat (yaw/pitch) z oka gracza do punktu celowania na celu.
+    private float[] anglesTo(LivingEntity t) {
+        return anglesFrom(mc.player.getEyePos(), getAimpoint(t));
+    }
+
+    /** Kąt z dowolnego punktu (np. z „wychylonego" oka przy PosSpoof) do celu. */
+    private float[] anglesFrom(Vec3d from, Vec3d to) {
+        Vec3d diff = to.subtract(from);
+        float yaw = (float) (Math.toDegrees(Math.atan2(diff.z, diff.x)) - 90d);
+        float pitch = (float) (-Math.toDegrees(Math.atan2(diff.y, Math.hypot(diff.x, diff.z))));
+        return new float[]{yaw, pitch};
+    }
+
+    @EventHandler
+    public void onSync(EventSync e) {
+        // SILENT: kat do serwera + obrot MODELU, kamera przywracana po wysłaniu pakietu (widok stoi).
+        boolean silentMode = effectiveRotate() == Rotate.Silent;
+
+        if (snap.getValue() && silentMode) {
+            boolean snapping = target != null && rotating && (hitReady || ticksSinceHit <= snapTicks.getValue());
+            if (snapping) {
+                applySilent(e, anglesTo(target));
+                return;
+            }
+
+            // Between hits: walk the sent rotation back to your own look. Jumping straight back would be the
+            // same one-tick 180° that MaxTurn exists to prevent, just in the other direction. PauseOnUse
+            // skips the walk: a chest needs your real look in the very next packet.
+            if (!sentValid || interacting) {
+                sentValid = false;
+                return;
+            }
+            float ownYaw = mc.player.getYaw(), ownPitch = mc.player.getPitch();
+            if (Math.abs(MathHelper.wrapDegrees(ownYaw - sentYaw)) < 1f && Math.abs(ownPitch - sentPitch) < 1f) {
+                sentValid = false; // back on your look: from here the packets carry it unchanged
+                return;
+            }
+            applySilent(e, new float[]{ownYaw, ownPitch});
+            return;
+        }
+
+        if (target == null || !rotating || !silentMode) return;
+        applySilent(e, anglesTo(target));
+    }
+
+    /** Sends {@code a} for this tick (stepped by MaxTurn from the last sent rotation) and restores the camera. */
+    private void applySilent(EventSync e, float[] a) {
+        savedYaw = mc.player.getYaw();
+        savedPitch = mc.player.getPitch();
+        rotationApplied = true;
+
+        // Step towards the target instead of teleporting onto it. A hit that arrives right after a 180°
+        // jump is the easiest thing in the world for an anticheat to throw away, and a thrown-away hit is
+        // exactly what "it swings through the wall but he takes no damage" looks like.
+        float step = MathHelper.clamp(maxTurn.getValue(), 10f, 180f);
+        float baseYaw = sentValid ? sentYaw : savedYaw;
+        float basePitch = sentValid ? sentPitch : savedPitch;
+
+        // HUMANIZE (Rockstar port): drifting Perlin offset that fades as you align, so the SILENT aura also moves
+        // like a hand on a mouse instead of snapping flat onto the point. Same curve as the AimAssist path.
+        if (humanize.getValue() && humanAmount.getValue() > 0f) {
+            float yawDiff = Math.abs(MathHelper.wrapDegrees(a[0] - baseYaw));
+            float pitchDiff = Math.abs(MathHelper.wrapDegrees(a[1] - basePitch));
+            float fade = MathHelper.clamp((yawDiff + pitchDiff) / 30f, 0f, 1f);
+            double t = (System.currentTimeMillis() - humanStart) * 5.0E-4;
+            a[0] += (float) aimNoise.noise(t) * humanAmount.getValue() * fade;
+            a[1] += (float) aimNoise.noise(t, 10.0) * humanAmount.getValue() * 0.6f * fade;
+            // Variable speed: slow while far, snappy on the finish (the Rockstar yawSpeed curve) - only when far.
+            step = MathHelper.clamp(step * (0.4f + 0.6f * (1f - fade)), 10f, 180f);
+        }
+        prevSentYaw = baseYaw;
+        prevSentPitch = basePitch;
+        silentLive = true;
+        sentYaw = baseYaw + MathHelper.clamp(MathHelper.wrapDegrees(a[0] - baseYaw), -step, step);
+        sentPitch = MathHelper.clamp(basePitch + MathHelper.clamp(MathHelper.wrapDegrees(a[1] - basePitch), -step, step), -89f, 89f);
+        sentValid = true;
+
+        mc.player.setYaw(sentYaw);
+        mc.player.setPitch(sentPitch);
+        mc.player.setBodyYaw(sentYaw);
+        mc.player.setHeadYaw(sentYaw);
+        e.addPostAction(this::restoreRotation);
+    }
+
+    /**
+     * Puts the real look back. Anything that cancels the sync event (Blink, PacketFly, a timer module…)
+     * swallows the post-action, and then the silent angle STAYS on the player — the camera sits glued to the
+     * target and WASD suddenly moves relative to that angle, which feels exactly like "I can't move".
+     * So the restore is also run at the head of the next tick if it never happened.
+     */
+    /** Distance from the eyes to the closest point of the target's hitbox (0 when inside it). */
+    private double boxDistance(LivingEntity entity) {
+        return boxDistanceFrom(mc.player.getEyePos(), entity);
+    }
+
+    /** Same measurement the server makes, but from an arbitrary eye position (used to vet a peek offset). */
+    private double boxDistanceFrom(Vec3d eye, LivingEntity entity) {
+        Box box = entity.getBoundingBox();
+        double dx = Math.max(Math.max(box.minX - eye.x, 0), eye.x - box.maxX);
+        double dy = Math.max(Math.max(box.minY - eye.y, 0), eye.y - box.maxY);
+        double dz = Math.max(Math.max(box.minZ - eye.z, 0), eye.z - box.maxZ);
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
+     * Jump-crit gate. Mid-air a hit only crits while you are FALLING, so once you leave the ground the
+     * swing is held back until the descent starts. Standing on the ground (or in water / on elytra, where
+     * crits do not exist) it never blocks anything.
+     */
+    private boolean critReady() {
+        // tylko po TWOIM skoku ze spacji — spadanie z bloku, knockback czy wybicie nie wstrzymują ciosu
+        if (!autoCrit.getValue() || !spaceJump) return true;
+        if (mc.player.isOnGround() || mc.player.isTouchingWater() || mc.player.isGliding()
+                || mc.player.hasVehicle() || mc.player.isClimbing() || inWeb())
+            return true;
+        // Only require that you are FALLING (fallDistance > 0), which is the server's own crit condition. The extra
+        // velocity.y < 0 check was too strict - at the jump apex it briefly fails, so the swing was held through the
+        // crit window and the hit landed flat ("nie krytuje").
+        return mc.player.fallDistance > 0f;
+    }
+
+    /**
+     * In a cobweb you never really fall, so waiting for the crit window would mean never swinging at all —
+     * exactly when you can least afford it. Web = hit immediately, no crit games.
+     */
+    private boolean inWeb() {
+        if (mc.world == null) return false;
+        net.minecraft.util.math.BlockPos feet = mc.player.getBlockPos();
+        return mc.world.getBlockState(feet).isOf(net.minecraft.block.Blocks.COBWEB)
+                || mc.world.getBlockState(feet.up()).isOf(net.minecraft.block.Blocks.COBWEB);
+    }
+
+    /**
+     * Was this airborne moment started by the player pressing space? The key is usually released before the
+     * client reports us off the ground, so a short memory of the last press is used instead of the live key
+     * state.
+     */
+    private void trackJump() {
+        if (mc.options != null && mc.options.jumpKey.isPressed())
+            lastJumpPress = System.currentTimeMillis();
+
+        boolean onGround = mc.player.isOnGround();
+        if (onGround) spaceJump = false;
+        else if (wasOnGround) spaceJump = System.currentTimeMillis() - lastJumpPress < 300L;
+        wasOnGround = onGround;
+    }
+
+    /**
+     * With silent aim the camera is restored right after the packet, and the player's yaw goes with it — so
+     * in F5 the model looked wherever YOU look, never at the target the server sees you facing. The model
+     * renderer asks this instead, and draws the rotation that was actually sent.
+     */
+    public boolean showsSilentLook() {
+        return isEnabled() && silentLive && sentValid;
+    }
+
+    public float silentRenderYaw(float tickDelta) {
+        return prevSentYaw + MathHelper.wrapDegrees(sentYaw - prevSentYaw) * tickDelta;
+    }
+
+    public float silentRenderPitch(float tickDelta) {
+        return MathHelper.lerp(tickDelta, prevSentPitch, sentPitch);
+    }
+
+    private void restoreRotation() {
+        if (!rotationApplied) return;
+        rotationApplied = false;
+        mc.player.setYaw(savedYaw);
+        mc.player.setPitch(savedPitch);
+        mc.player.setBodyYaw(savedYaw);
+        mc.player.setHeadYaw(savedYaw);
+    }
+
+    /**
+     * Reticle on the locked target: four corner ticks around the aim point plus a centre dot, projected
+     * from the world position — so with TargetLock on you can always see WHO the lock is holding, even when
+     * the target is behind you or behind a wall.
+     */
+    public void onRender2D(net.minecraft.client.gui.DrawContext context) {
+        // Marker ESP: four glowing corner brackets around the target's screen box, drawn here because it is a
+        // 2D overlay (the other ESP modes are world geometry, drawn in onRender3D).
+        if (targetEsp.getValue() && espMode.getValue() == Esp.Marker && espSubject != null && mc.player != null)
+            drawMarkerEsp(context, espSubject);
+
+        if (target == null || !oTargetLock.getValue() || !lockCrosshair.getValue()) return;
+        if (mc.player == null || mc.world == null) return;
+
+        Vec3d screen = Render3DEngine.worldSpaceToScreenSpace(getAimpoint(target));
+        if (!(screen.z > 0 && screen.z < 1)) return;
+
+        float x = (float) screen.x, y = (float) screen.y;
+        java.awt.Color accent = thunder.hack.features.modules.client.HudEditor.getColor(0);
+        float arm = 4.5f, gap = 2.5f, th = 1.2f;
+
+        Render2DEngine.drawRound(context, x - gap - arm, y - th / 2f, arm, th, 0.5f, accent);
+        Render2DEngine.drawRound(context, x + gap, y - th / 2f, arm, th, 0.5f, accent);
+        Render2DEngine.drawRound(context, x - th / 2f, y - gap - arm, th, arm, 0.5f, accent);
+        Render2DEngine.drawRound(context, x - th / 2f, y + gap, th, arm, 0.5f, accent);
+        Render2DEngine.drawRound(context, x - 1f, y - 1f, 2f, 2f, 1f, accent);
+    }
+
+    public void onRender3D(MatrixStack stack) {
+        // AIM-ASSIST: co klatkę dociągamy REALNĄ kamerę na cel — łeb przekręca się dla Ciebie (płynność
+        // reguluje Smooth). Serwer dostaje ten obrót normalnymi pakietami ruchu, więc aura trafia.
+        if (effectiveRotate() == Rotate.AimAssist && rotating && target != null) {
+            float[] a = anglesTo(target);
+            // TargetLock ma trzymać mocno — inaczej przy niskim Smooth "lock" ledwo ciągnie i znowu wygląda
+            // jakby był wyłączony
+            float base = oTargetLock.getValue()
+                    ? Math.max(0.75f, MathHelper.clamp(smooth.getValue(), 0.05f, 1f))
+                    : MathHelper.clamp(smooth.getValue(), 0.05f, 1f);
+
+            // This runs per FRAME, so applying Smooth raw meant the pull scaled with your framerate: at 60fps
+            // Smooth 0.45 is a gentle drag, at 300fps the same value snaps onto the target in about 20ms and
+            // the aura looks like a rifle. Converting it to a per-second rate makes the setting mean one
+            // thing at any framerate.
+            long now = System.nanoTime();
+            float dt = lastAimNanos == 0L ? 0.05f : (now - lastAimNanos) / 1_000_000_000f;
+            lastAimNanos = now;
+            dt = MathHelper.clamp(dt, 0.001f, 0.25f);
+            float pull = (float) (1.0 - Math.pow(1.0 - base, dt * 20.0));
+
+            // HUMANIZE: drifting Perlin offset on the aim that fades out as you line up (Rockstar-style). Big while
+            // the crosshair is far from the target, ~0 once it has arrived, so the hit itself still lands on-point.
+            if (humanize.getValue() && humanAmount.getValue() > 0f) {
+                float yawDiff = Math.abs(MathHelper.wrapDegrees(a[0] - mc.player.getYaw()));
+                float pitchDiff = Math.abs(MathHelper.wrapDegrees(a[1] - mc.player.getPitch()));
+                float fade = MathHelper.clamp((yawDiff + pitchDiff) / 30f, 0f, 1f); // 0 when aligned, 1 when far
+                double t = (System.currentTimeMillis() - humanStart) * 5.0E-4;
+                a[0] += (float) aimNoise.noise(t) * humanAmount.getValue() * fade;
+                a[1] += (float) aimNoise.noise(t, 10.0) * humanAmount.getValue() * 0.6f * fade;
+            }
+
+            float ny = mc.player.getYaw() + MathHelper.wrapDegrees(a[0] - mc.player.getYaw()) * pull;
+            float np = mc.player.getPitch() + MathHelper.wrapDegrees(a[1] - mc.player.getPitch()) * pull;
+            np = MathHelper.clamp(np, -90f, 90f);
+            mc.player.setYaw(ny);
+            mc.player.setPitch(np);
+            // Drive the MODEL too: body + head yaw go to the target so your character VISIBLY faces the target in
+            // third person (F5) and to others - previously only the camera (yaw) + the lerp-prev values were set,
+            // so the body never turned and in F5 you did not look at the target.
+            mc.player.setBodyYaw(ny);
+            mc.player.setHeadYaw(ny);
+            // onRender3D runs PER FRAME, and the camera is rendered as lerp(lastYaw, yaw). Writing only yaw here
+            // left lastYaw behind, so every frame the view swung between the old and the new angle - a visible
+            // shake, worst while walking (the mouse and the pull both moving). Pinning the prev values to the
+            // new ones makes the camera sit exactly where the pull put it; the pull itself is the smoothing.
+            mc.player.lastYaw = ny;
+            mc.player.lastPitch = np;
+            mc.player.lastHeadYaw = ny;
+            mc.player.lastBodyYaw = ny;
+
+            // SaveLock: the crosshair has arrived on the target - save it; from the next tick it is held silently
+            // and the camera is free again. The silent chain restarts from this look, so there is no jump.
+            if (saveLock.getValue() && savedLock != target
+                    && Math.abs(MathHelper.wrapDegrees(a[0] - ny)) < 3f && Math.abs(a[1] - np) < 3f) {
+                savedLock = target;
+                sentValid = false;
+            }
+        } else {
+            // no target = no stale timestamp, otherwise the first frame after acquiring one sees a huge dt
+            // and snaps straight onto the target — the exact thing Smooth is there to prevent
+            lastAimNanos = 0L;
+        }
+
+        if (!targetEsp.getValue()) {
+            espSubject = null;
+            return;
+        }
+
+        // When the target steps out of reach the marker does not blink out: it plays a short exit on the
+        // last target - GombalV3's shards fly off and fade, Cloudan's ring swells and dissolves.
+        boolean inRange = target != null && mc.player.distanceTo(target) <= distance.getValue() + preaim.getValue();
+        float exit = 0f;
+        if (inRange) {
+            espSubject = target;
+            espExitStart = 0L;
+        } else if (espSubject != null) {
+            long now = System.currentTimeMillis();
+            if (espExitStart == 0L) espExitStart = now;
+            exit = (now - espExitStart) / (float) ESP_EXIT_MS;
+            if (exit >= 1f || espSubject.isRemoved()) {
+                espSubject = null;
+                return;
+            }
+        }
+
+        LivingEntity shown = espSubject;
+        if (shown != null) {
+            if (exit > 0f && espMode.getValue() != Esp.GombalV3 && espMode.getValue() != Esp.Cloudan) return;
+            switch (espMode.getValue()) {
+                case Cloudan -> Render3DEngine.drawCloudanTargetEsp(shown,
+                        Render2DEngine.injectAlpha(espColor(), Math.round(espColor().getAlpha() * (1f - exit))),
+                        espScale.getValue() * (1f + exit * 0.8f), espThroughWalls.getValue());
+                case Gombal -> Render3DEngine.drawTargetEsp(stack, target);
+                case CelkaPasta -> Render3DEngine.drawOldTargetEsp(stack, target);
+                case NurikZapen -> CaptureMark.render(target);
+                case GombalV2 -> Render3DEngine.renderGhosts(espLength.getValue(), espFactor.getValue(), espShaking.getValue(), espAmplitude.getValue(), target);
+                case GombalV3 -> Render3DEngine.drawEntityBillboard(shown, TextureStorage.fxGombalV3,
+                        Render2DEngine.injectAlpha(espColor(), Math.round(255 * (1f - exit))),
+                        espScale.getValue(), espThroughWalls.getValue());
+                case Off -> {
+                }
+            }
+        }
+    }
+
+    private boolean isUsingItems() {
+        if (oStopUseItem.getValue() && !mc.player.getActiveItem().isEmpty()
+                && mc.player.getActiveItem().getItem() == Items.SHIELD)
+            return false;
+        return mc.player.isUsingItem();
+    }
+
+    /**
+     * Picks the best target in ONE pass. The old version built an ArrayList of every valid entity and then
+     * sorted it — every single tick, on a server with a busy area that is a fresh list plus a sort per tick,
+     * for a result that is just the minimum. Now nothing is allocated and nothing is sorted.
+     */
+    private void updateTarget() {
+        LivingEntity best = null;
+        double bestKey = Double.MAX_VALUE;
+
+        for (Entity entity : mc.world.getEntities()) {
+            if (!(entity instanceof LivingEntity living)) continue;
+            if (!isValid(living)) continue;
+
+            double key = sortKey(living);
+            if (key < bestKey) {
+                bestKey = key;
+                best = living;
+            }
+        }
+        target = best;
+    }
+
+    private double sortKey(LivingEntity en) {
+        return switch (sort.getValue()) {
+            case Health -> en.getHealth() + en.getAbsorptionAmount();
+            case Distance -> mc.player.squaredDistanceTo(en);
+        };
+    }
+
+    private boolean isValid(LivingEntity entity) {
+        if (entity == null || entity == mc.player) return false;
+
+        // Cheapest possible reject FIRST: a squared distance compare against the widest reach we could ever
+        // use. Everything below (raycasts, the AntiBot list scan, string compares) then only runs for the
+        // handful of entities that are actually near you, instead of for every entity in the world.
+        float maxReach = Math.max(distance.getValue() + preaim.getValue(),
+                oElytraTarget.getValue() ? elytraDistance.getValue() : 0f) + 2f;
+        if (mc.player.squaredDistanceTo(entity) > maxReach * maxReach) return false;
+
+        if (!entity.isAlive() || entity.getHealth() <= 0f) return false;
+
+        // Tryb elytry: dłuższy zasięg i wyłącznie gracze. Wcześniej ta gałąź RETURNOWAŁA true, przez co lot
+        // wyłączał całą resztę filtrów poniżej — aura brała na cel friendów, spectatorów, ludzi w kreatywie
+        // i boty, bo do nich po prostu nie dochodziła. Lot nie jest powodem, żeby staranować kolegę.
+        boolean elytraMode = oElytraTarget.getValue() && mc.player.isGliding();
+        if (elytraMode) {
+            if (!(entity instanceof PlayerEntity)) return false;
+            if (mc.player.distanceTo(entity) > elytraDistance.getValue()) return false;
+        } else if (boxDistance(entity) >= distance.getValue() + preaim.getValue()) {
+            return false;
+        }
+
+        if (!tBots.getValue() && ModuleManager.antiBot.isEnabled() && AntiBot.bots.contains(entity))
+            return false;
+
+        // raycast last — it is by far the most expensive check here. With the wall exploit on, Walls is moot:
+        // the whole point is to keep the target while it is behind a block.
+        if (!throughWalls.getValue() && !mc.player.canSee(entity))
+            return false;
+
+        if (entity instanceof PlayerEntity p) {
+            // Spectators and creative players cannot be hit at all — every swing at one is a wasted attack
+            // window and, on a watching anticheat, a swing at something you demonstrably cannot damage.
+            if (p.isSpectator() || p.isCreative())
+                return false;
+            // friends are never a target - the opt-in toggle is gone, every other module
+            // (AutoTrap, AutoWeb, crystals...) already skips them unconditionally
+            if (Managers.FRIEND.isFriend(p))
+                return false;
+            if (p.getName().getString().equalsIgnoreCase(mc.player.getName().getString()))
+                return false;
+            if (!tPlayers.getValue())
+                return false;
+            if (p.getArmor() == 0 && p.isInvisible() && !tNakedInvis.getValue())
+                return false;
+            if (p.isInvisible() && !tInvis.getValue())
+                return false;
+            if (p.getArmor() == 0 && !tNakeds.getValue())
+                return false;
+        } else if (entity instanceof VillagerEntity && !tVillager.getValue()) {
+            return false;
+        } else if (entity instanceof HostileEntity && !tMobs.getValue()) {
+            return false;
+        } else if (entity instanceof AnimalEntity && !tAnimals.getValue()) {
+            return false;
+        } else if (entity instanceof MobEntity && !tMobs.getValue()) {
+            return false;
+        }
+
+        return !(entity instanceof ArmorStandEntity);
+    }
+
+    // ====== PUNKTY CELOWANIA (port z evaware AuraUtil) ======
+
+    private Vec3d getAimpoint(LivingEntity entity) {
+        // Offset spod updateAim: zawiera już wybór SmartAima (punkt widoczny mimo ściany), a doklejony do
+        // ŻYWEJ pozycji celu jedzie razem z nim między klatkami.
+        if (entity == target && aimOffsetValid) return entity.getEntityPos().add(aimOffset);
+        return getRawAimpoint(entity);
+    }
+
+    private Vec3d getRawAimpoint(LivingEntity entity) {
+        // z lockiem celujemy w głowę, nie w pas
+        if (oTargetLock.getValue() && lockHead.getValue())
+            return headPoint(entity);
+
+        return switch (aimPoint.getValue()) {
+            case HolyWorld -> getDvDPoint(entity);      // DVD-logo: punkt lata po hitboxie
+            case SpookyTime -> getSpookyTimePoint(entity); // rotacja punktu wg hitCount
+            case DistanceBased -> getDistanceBasedPoint(entity); // wysokość wg dystansu (Lony/Fun)
+            default -> getBestVector(entity);           // Nearest: mądra wysokość
+        };
+    }
+
+    // getBestVector: pozycja celu + Y dopasowane do różnicy wzrostu i stanu (elytra/kucanie/ziemia).
+    private Vec3d getBestVector(LivingEntity entity) {
+        double yExpand = MathHelper.clamp(
+                mc.player.getEyeHeight(mc.player.getPose()) - entity.getEyeHeight(entity.getPose()),
+                entity.getHeight() / 2.0f,
+                entity.getHeight())
+                / (mc.player.isGliding() ? 10.0f
+                : (!mc.options.sneakKey.isPressed() && mc.player.isOnGround()
+                ? (entity.isSneaking() ? 0.8f : 0.6f)
+                : 1.0f));
+        return entity.getEntityPos().add(0, yExpand, 0);
+    }
+
+    // SpookyTime: punkt „krąży" po hitboxie w rytm hitCount (zmienianego przy każdym uderzeniu).
+    private Vec3d getSpookyTimePoint(LivingEntity entity) {
+        float safe = 0.06f;
+        float horValue = entity.getWidth() / 2.0f * hitCount;
+        float verValue = entity.getHeight() / 4.0f * (hitCount + 1.0f);
+        Box box = entity.getBoundingBox();
+        Vec3d best = getBestVector(entity);
+        return new Vec3d(
+                MathHelper.clamp(best.x - horValue, box.minX + safe, box.maxX - safe),
+                MathHelper.clamp(best.y - verValue, box.minY + safe, box.maxY - safe),
+                MathHelper.clamp(best.z + horValue, box.minZ + safe, box.maxZ - safe));
+    }
+
+    // DistanceBased (Lony Grief / Fun Time): wysokość celowania zależna od dystansu do celu.
+    private Vec3d getDistanceBasedPoint(LivingEntity entity) {
+        Vec3d eye = mc.player.getEyePos();
+        Box box = entity.getBoundingBox();
+        float attackDistance = distance.getValue() + preaim.getValue();
+        float distanceFactor = (float) (mc.player.getEntityPos().distanceTo(entity.getEntityPos()) / attackDistance);
+        float minY = (float) (box.maxY - box.minY);
+        float clampedY = (float) Math.max(box.minY + minY * distanceFactor, box.minY + minY * 0.3f);
+        float safePoint = entity.getWidth() * 0.4f;
+        return new Vec3d(
+                MathHelper.clamp(eye.x, box.minX + safePoint, box.maxX - safePoint),
+                MathHelper.clamp(eye.y, box.minY, clampedY),
+                MathHelper.clamp(eye.z, box.minZ + safePoint, box.maxZ - safePoint));
+    }
+
+    // HolyWorld: „DVD-logo" — punkt odbija się od ścian hitboxu z losową prędkością + jitter.
+    private Vec3d getDvDPoint(LivingEntity entity) {
+        float minMotionXZ = 0.003f, maxMotionXZ = 0.04f, minMotionY = 0.001f, maxMotionY = 0.03f;
+        Box box = entity.getBoundingBox();
+        double lengthX = box.getLengthX();
+        double lengthY = box.getLengthY() * 0.8f;
+        double lengthZ = box.getLengthZ();
+
+        if (dvdMotion.equals(Vec3d.ZERO))
+            dvdMotion = new Vec3d(MathUtility.random(-0.05f, 0.05f), MathUtility.random(-0.05f, 0.05f), MathUtility.random(-0.05f, 0.05f));
+
+        dvdPoint = dvdPoint.add(dvdMotion);
+        if (dvdPoint.x >= (lengthX - 0.05) / 2.0)
+            dvdMotion = new Vec3d(-MathUtility.random(minMotionXZ, maxMotionXZ), dvdMotion.getY(), dvdMotion.getZ());
+        if (dvdPoint.y >= lengthY)
+            dvdMotion = new Vec3d(dvdMotion.getX(), -MathUtility.random(minMotionY, maxMotionY), dvdMotion.getZ());
+        if (dvdPoint.z >= (lengthZ - 0.05) / 2.0)
+            dvdMotion = new Vec3d(dvdMotion.getX(), dvdMotion.getY(), -MathUtility.random(minMotionXZ, maxMotionXZ));
+        if (dvdPoint.x <= -(lengthX - 0.05) / 2.0)
+            dvdMotion = new Vec3d(MathUtility.random(minMotionXZ, 0.03f), dvdMotion.getY(), dvdMotion.getZ());
+        if (dvdPoint.y <= 0.05)
+            dvdMotion = new Vec3d(dvdMotion.getX(), MathUtility.random(minMotionY, maxMotionY), dvdMotion.getZ());
+        if (dvdPoint.z <= -(lengthZ - 0.05) / 2.0)
+            dvdMotion = new Vec3d(dvdMotion.getX(), dvdMotion.getY(), MathUtility.random(minMotionXZ, maxMotionXZ));
+
+        Vec3d dvdPointed = entity.getEntityPos().add(dvdPoint);
+        return new Vec3d(
+                MathHelper.clamp(dvdPointed.x, box.minX, box.maxX),
+                MathHelper.clamp(dvdPointed.y, box.minY, box.maxY),
+                MathHelper.clamp(dvdPointed.z, box.minZ, box.maxZ));
+    }
+
+    // ====== WALL EXPLOIT ======
+
+    /** Czy z punktu {@code from} widać punkt {@code to} bez bloku po drodze? */
+    private boolean lineClear(Vec3d from, Vec3d to) {
+        if (mc.world == null) return true;
+        return mc.world.raycast(new RaycastContext(from, to,
+                RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, mc.player))
+                .getType() == HitResult.Type.MISS;
+    }
+
+    /**
+     * Raz na tick decyduje, GDZIE celujemy, i zapisuje to jako offset od pozycji celu.
+     * <p>
+     * Jedno wywołanie {@link #getRawAimpoint} na tick jest tu istotne, a nie kosmetyczne: HolyWorld i
+     * SpookyTime przesuwają swój punkt przy każdym odczycie, więc liczenie ich raz w ticku i drugi raz przy
+     * teście widoczności rozjeżdżało kąt wysłany do serwera z tym, w co naprawdę celowaliśmy.
+     * <p>
+     * Jeśli ten punkt jest za blokiem, skanujemy hitbox w poszukiwaniu rogu/krawędzi z czystą linią — dopiero
+     * taki kąt przechodzi przez LOS-check serwera, a że punkt leży na hitboksie, cios dalej trafia normalnie.
+     */
+    private void updateAim() {
+        aimOffsetValid = false;
+        wallBlind = false;
+        if (target == null) return;
+
+        Vec3d point = getRawAimpoint(target);
+
+        if (throughWalls.getValue() && mc.world != null) {
+            Vec3d eye = mc.player.getEyePos();
+            if (!lineClear(eye, point)) { // coś zasłania — szukamy widocznego kawałka celu
+                Vec3d best = findVisiblePoint(eye, target);
+                if (best != null) {
+                    point = best;
+                } else {
+                    // Nothing on the hitbox has a line to it. Aim at the very top of the box rather than the
+                    // middle of a body buried in stone: the head is the part that clears a fence, slab, stair
+                    // or half wall first, so the next tick often finds a real line from there — and it is the
+                    // point several anticheats are laxest about. The swing is no worse off either way.
+                    point = new Vec3d(target.getX(), target.getBoundingBox().maxY - 0.05, target.getZ());
+                    wallBlind = true;
+                }
+            }
+        }
+
+        aimOffset = point.subtract(target.getEntityPos());
+        aimOffsetValid = true;
+    }
+
+    /** Skan hitboxu celu w poszukiwaniu punktu z czystą linią wzroku (najbliższy wygrywa). */
+    private Vec3d findVisiblePoint(Vec3d eye, LivingEntity entity) {
+        Box box = entity.getBoundingBox();
+        double insetX = Math.min(0.08, box.getLengthX() / 4.0);
+        double insetZ = Math.min(0.08, box.getLengthZ() / 4.0);
+        double midX = (box.minX + box.maxX) / 2.0;
+        double midZ = (box.minZ + box.maxZ) / 2.0;
+        // The reach the server enforces is eyes -> NEAREST point of the hitbox, and it is already checked in
+        // attack(). Demanding that the VISIBLE point also sits inside that radius was throwing away almost
+        // every corner SmartAim exists to find — the bit of a player peeking past a wall is by definition the
+        // far edge of the box, routinely 0.5+ blocks behind the near face. Only a sanity cap stays.
+        double cap = distance.getValue() + 2f;
+
+        // Coarse pass first: the handful of points that resolve almost every real corner peek, for the price
+        // of 36 raycasts.
+        Vec3d hit = scanBox(eye, cap,
+                new double[]{midX, box.minX + insetX, box.maxX - insetX},
+                // od góry (najczęściej wystaje zza półbloku/płotu) w dół do stóp
+                new double[]{box.maxY - 0.12, box.maxY - 0.45, (box.minY + box.maxY) / 2.0, box.minY + 0.12},
+                new double[]{midZ, box.minZ + insetZ, box.maxZ - insetZ});
+        if (hit != null) return hit;
+
+        // Only when that found nothing: a finer sweep. A player showing a sliver of shoulder past a corner is
+        // easy to miss on a 3x3, and every miss means we aim into a wall while a perfectly good line existed.
+        //
+        // Only the SILHOUETTE is sampled, not a solid grid: a point in the middle of a hitbox is visible
+        // essentially only when some point on the outline already is, so a full 5x7x5 block of samples spent
+        // two thirds of its raycasts re-proving what the outline had settled. Eight points around the
+        // perimeter per level, seven levels, is 56 raycasts instead of 175 for a strictly better spread.
+        double[] xs = {box.minX + insetX, midX, box.maxX - insetX};
+        double[] zs = {box.minZ + insetZ, midZ, box.maxZ - insetZ};
+
+        Vec3d best = null;
+        double bestDist = Double.MAX_VALUE;
+
+        for (double y : spread(box.minY + 0.06, box.maxY - 0.06, 7))
+            for (double x : xs)
+                for (double z : zs) {
+                    if (x == midX && z == midZ) continue; // środek — nie należy do obrysu
+                    Vec3d point = new Vec3d(x, y, z);
+                    double d = eye.squaredDistanceTo(point);
+                    if (d >= bestDist || d > cap * cap) continue;
+                    if (!lineClear(eye, point)) continue;
+                    bestDist = d;
+                    best = point;
+                }
+
+        return best;
+    }
+
+    /** Równomierne próbki między granicami (włącznie) — siatka do skanowania hitboxu. */
+    private static double[] spread(double from, double to, int count) {
+        double[] out = new double[count];
+        for (int i = 0; i < count; i++)
+            out[i] = count == 1 ? (from + to) / 2.0 : from + (to - from) * i / (count - 1);
+        return out;
+    }
+
+    /** Najbliższy punkt podanej siatki, do którego oko ma czystą linię (null = żaden). */
+    private Vec3d scanBox(Vec3d eye, double cap, double[] xs, double[] ys, double[] zs) {
+        Vec3d best = null;
+        double bestDist = Double.MAX_VALUE;
+
+        for (double y : ys)
+            for (double x : xs)
+                for (double z : zs) {
+                    Vec3d point = new Vec3d(x, y, z);
+                    double d = eye.squaredDistanceTo(point);
+                    if (d >= bestDist || d > cap * cap) continue;
+                    if (!lineClear(eye, point)) continue;
+                    bestDist = d;
+                    best = point;
+                }
+
+        return best;
+    }
+
+    /**
+     * Cel dalej za ścianą mimo SmartAim? Znajdź przesunięcie pozycji (maks. SpoofRadius), z którego widać
+     * punkt celowania. Zwraca null, gdy spoof jest zbędny albo nic nie pomaga (gruba ściana — wtedy po prostu
+     * lecimy z ciosem jak dotąd, vanilla go przyjmie).
+     */
+    private Vec3d findPeekOffset() {
+        if (target == null || !throughWalls.getValue() || mc.world == null) return null;
+        // GrimPacketOrder: PosSpoof sends extra PlayerMoveC2SPacket.Full packets to "peek" round a corner at a
+        // player. Those extra position packets land in an order GrimAC's tick-sync does not expect -> PacketOrderE,
+        // and ONLY on players behind cover (a villager in the open never triggers a peek). So with GrimPacketOrder
+        // on, no PosSpoof: the aura stays flag-clean on players at the cost of the through-wall peek.
+        if (grimOrder.getValue()) return null;
+        // FakeLag / Blink park your movement packets, so the server's idea of where you stand is already
+        // hundreds of ms old. Peeking off THAT position is not a 0.4-block nudge any more, it is a teleport
+        // — so while something is holding packets, no spoof.
+        if (ModuleManager.fakeLag.isEnabled() || ModuleManager.blink.isEnabled()) return null;
+
+        // wallBlind mówi wprost, że skan hitboxu w tym ticku nie znalazł ANI JEDNEGO widocznego punktu —
+        // dokładnie i tylko wtedy peek ma sens. Wcześniej szło tu jeszcze jedno raycastowanie, które w
+        // najlepszym razie powtarzało wynik skanu, a w najgorszym puszczało peeka mimo znalezionego rogu.
+        if (!wallBlind) return null;
+
+        Vec3d eye = mc.player.getEyePos();
+        Vec3d aim = getAimpoint(target);
+
+        double radius = SPOOF_RADIUS;
+        // A peek can push you AWAY from the target and break the reach check from the other side, so every
+        // candidate is vetted the way the server measures it: eyes -> nearest point of the hitbox. Measuring
+        // to the aim point instead (often the far corner) is what threw away most workable peeks.
+        double reach = distance.getValue();
+
+        // Straight down first, and by a crouch's worth of eye height. That is the exact case you hit by hand:
+        // dropping the eyes clears the line under an overhang / over a low wall — only here the server sees
+        // the drop without you actually crouching.
+        for (double dy : new double[]{-0.35, -0.7, 0.35, 0.7, -1.0}) {
+            if (Math.abs(dy) > radius) continue;
+            Vec3d off = new Vec3d(0, dy, 0);
+            if (boxDistanceFrom(eye.add(off), target) > reach) continue;
+            if (!peekLegal(off)) continue;
+            if (lineClear(eye.add(off), aim)) return off;
+        }
+
+        for (double scale : new double[]{radius, radius * 0.75, radius * 0.5, radius * 0.25}) {
+            for (Vec3d dir : PEEK_DIRS) {
+                // najpierw płasko, potem z podbiciem w górę i w dół (przeskok nad murkiem / spod parapetu)
+                double[] verticals = {0, -0.35, -scale, scale};
+
+                for (double dy : verticals) {
+                    Vec3d off = new Vec3d(dir.x * scale, dy, dir.z * scale);
+                    Vec3d peekEye = eye.add(off);
+                    if (boxDistanceFrom(peekEye, target) > reach) continue;
+                    if (!peekLegal(off)) continue;
+                    if (!lineClear(peekEye, aim)) continue;
+                    return off;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A peek is only worth sending if the position it claims is one you could legally stand in. Half the
+     * offsets the search used to hand back put the player's hitbox inside the floor or inside the very wall
+     * being peeked around; vanilla answers that with "moved wrongly" and a setback, which cancels the hit and
+     * rubberbands you — strictly worse than not peeking at all.
+     */
+    private boolean peekLegal(Vec3d off) {
+        return mc.world.isSpaceEmpty(mc.player, mc.player.getBoundingBox().offset(off));
+    }
+
+    // aktualizacja hitCount po udanym uderzeniu (evaware onAttack)
+    private void onAttackAim() {
+        if (aimPoint.getValue() == AimPoint.SpookyTime) {
+            float hits = 0.3f;
+            hitCount += hits;
+            if (hitCount >= hits * 2.0f) hitCount = -hits;
+        } else {
+            hitCount++;
+            if (hitCount >= 3.0f) hitCount = 0.0f;
+        }
+    }
+
+    private void attack() {
+        boolean canAttack = oOnlyCrit.getValue()
+                ? (mc.player.getAttackCooldownProgress(2f) == 1f && (!smartCrits.getValue()
+                    || (!mc.player.isOnGround() && mc.player.fallDistance > 0f)))
+                : mc.player.getAttackCooldownProgress(2f) >= 0.97f;
+
+        if (!canAttack) return;
+        // reach measured eye -> nearest point of the hitbox, the same way the server checks it; centre to
+        // centre was cutting off targets that were perfectly hittable (above you, or behind a thin wall)
+        if (boxDistance(target) > distance.getValue()) return;
+        if (!critReady()) return;
+        // Set before the CPS limiter on purpose: SnapRotations starts turning while the limiter still holds
+        // the swing back, so the rotation is already on the target when the swing is let through.
+        hitReady = true;
+        // CPS limiter with a little jitter so the interval is not a perfectly flat number every swing
+        long interval = (long) (1000f / MathHelper.clamp(cps.getValue(), 1f, 20f));
+        if (!attackTimer.passedMs(interval + ThreadLocalRandom.current().nextInt(30))) return;
+
+        // Do NOT swing here. This runs before the movement packets go out, so the server would still have
+        // last tick's look when the hit lands. Queue it and fire right after the rotation packet instead.
+        attackQueued = true;
+    }
+
+    /**
+     * Fires the queued swing immediately after the look packet left the client, and only if the rotation we
+     * just sent really intersects the target's hitbox. On a duel server behind a wall there is no vanilla
+     * client trace to fall back on, so a hit whose ray misses the box is simply thrown away — that was the
+     * "1 out of 10 lands" behaviour, since the old gate only compared angles with a 14° tolerance (a player
+     * box is barely 6° wide at 3 blocks).
+     */
+    @EventHandler
+    @SuppressWarnings("unused")
+    public void onPostSync(EventPostSync e) {
+        if (grimOrder.getValue()) return; // handled at EventSync (vanilla order) when GrimPacketOrder is on
+        fireQueuedAttack();
+    }
+
+    /**
+     * GrimPacketOrder path: fire the swing at EventSync, which is the HEAD of sendMovementPackets - BEFORE the
+     * look/pos packet leaves. That is the order vanilla uses (attack during input handling, then movement), so
+     * GrimAC's PacketOrderE no longer sees an attack arriving after the flush.
+     */
+    @EventHandler
+    @SuppressWarnings("unused")
+    public void onSyncAttack(EventSync e) {
+        if (!grimOrder.getValue()) return;
+        fireQueuedAttack();
+    }
+
+    private void fireQueuedAttack() {
+        if (!attackQueued) return;
+        attackQueued = false;
+
+        if (target == null || mc.player == null || mc.interactionManager == null) return;
+        if (!aimGateOpen()) return;
+
+        performAttack();
+    }
+
+    /**
+     * The swing may only leave once the rotation the server holds really points at the target — but ONLY
+     * while the aura is the thing steering that rotation. With Rotate=Off, or while PauseOnUse parks the aim
+     * (shield up, bow drawn, a screen open), the look is yours and this gate could never open, so it used to
+     * eat every swing instead of just the aiming.
+     */
+    private boolean aimGateOpen() {
+        return !aimBeforeHit.getValue() || !aimActive || rayHitsTarget();
+    }
+
+    /** Does the ray along the rotation the server now holds actually pass through the target's hitbox? */
+    private boolean rayHitsTarget() {
+        boolean silent = effectiveRotate() == Rotate.Silent && sentValid;
+        float yaw = silent ? sentYaw : mc.player.getYaw();
+        float pitch = silent ? sentPitch : mc.player.getPitch();
+
+        Vec3d eye = mc.player.getEyePos();
+
+        // POINT BLANK. Box.raycast returns an EMPTY optional when the ray starts inside the box — there is
+        // no face to enter through, so vanilla reports "no hit". Standing on the same block as someone puts
+        // your eyes inside their hitbox, this gate said "the ray misses" and every single swing was thrown
+        // away by our own code. Inside the box there is nothing to trace: the hit is valid, full stop.
+        if (target.getBoundingBox().expand(0.12).contains(eye)) return true;
+
+        // reach + slack: the ray has to reach PAST the near face of the hitbox, otherwise a target sitting
+        // right at the edge of your reach gets its own hit thrown away by this gate
+        Vec3d end = eye.add(Vec3d.fromPolar(pitch, yaw).multiply(distance.getValue() + 1f));
+        // same slack vanilla gives entity picking, so grazing hits are not thrown away
+        return target.getBoundingBox().expand(0.12).raycast(eye, end).isPresent();
+    }
+
+    private void performAttack() {
+        // VANILLA-HIT path: when the crosshair genuinely sits on the target (AimAssist / TargetLock), fire the hit
+        // through the game's OWN doAttack() - byte-for-byte what happens when you click the mouse. The user proved
+        // manual clicks never flag while the aura's hand-rolled attackEntity+swing did ("źle wytajmingowane"), so
+        // routing through the real method removes that timing/sequence difference entirely.
+        if (grimOrder.getValue() && effectiveRotate() == Rotate.AimAssist
+                && mc.crosshairTarget instanceof net.minecraft.util.hit.EntityHitResult ehr
+                && ehr.getEntity() == target) {
+            ((thunder.hack.injection.accesors.IMinecraftClient) mc).idoAttack();
+            onAttackAim();
+            attackTimer.reset();
+            ticksSinceHit = 0;
+            return;
+        }
+
+        // Resolved before anything with a side effect, so the peek packet can go out ahead of the hit.
+        Vec3d peek = findPeekOffset();
+
+        int prevSlot = mc.player.getInventory().selectedSlot;
+        boolean swapped = false;
+
+        // MakeBoost: chwilowy swap na maczugę
+        if (oMakeBoost.getValue()) {
+            for (int i = 0; i < 9; i++) {
+                if (mc.player.getInventory().getStack(i).getItem() == Items.MACE) {
+                    sendPacket(new UpdateSelectedSlotC2SPacket(i));
+                    swapped = true;
+                    break;
+                }
+            }
+        }
+
+        if (oOffSprint.getValue())
+            disableSprint();
+
+        if (oStopUseItem.getValue() && !mc.player.getActiveItem().isEmpty()
+                && mc.player.getActiveItem().getItem() == Items.SHIELD)
+            mc.interactionManager.stopUsingItem(mc.player);
+
+        // PosSpoof: wychyl pozycję serwerową za róg, uderz z niej, natychmiast wróć na prawdziwą.
+        // Kolejność ma znaczenie — pakiet ruchu MUSI dojść przed interactem, inaczej serwer liczy cios
+        // ze starej pozycji i znów wywala go na line-of-sight.
+        double realX = mc.player.getX(), realY = mc.player.getY(), realZ = mc.player.getZ();
+
+        if (peek != null) {
+            // Position ALONE was the flaw: the anticheat traces from the position it last got, along the
+            // rotation it last got. Moving the position while leaving the rotation aimed from the old eye
+            // makes that ray miss the target completely — the peek cleared the wall and the hit still died.
+            // So the peek packet carries the angle recomputed FROM the peeked eye.
+            Vec3d peekEye = mc.player.getEyePos().add(peek);
+            float[] peekAngles = anglesFrom(peekEye, getAimpoint(target));
+            sendPacketSilent(new PlayerMoveC2SPacket.Full(
+                    realX + peek.x, realY + peek.y, realZ + peek.z,
+                    peekAngles[0], peekAngles[1],
+                    peek.y == 0 && mc.player.isOnGround(), mc.player.horizontalCollision));
+        }
+
+        mc.interactionManager.attackEntity(mc.player, target);
+        mc.player.swingHand(Hand.MAIN_HAND);
+
+        if (peek != null) {
+            boolean silent = effectiveRotate() == Rotate.Silent && sentValid;
+            sendPacketSilent(new PlayerMoveC2SPacket.Full(
+                    realX, realY, realZ,
+                    silent ? sentYaw : mc.player.getYaw(),
+                    silent ? sentPitch : mc.player.getPitch(),
+                    mc.player.isOnGround(), mc.player.horizontalCollision));
+        }
+
+        onAttackAim();
+
+        if (swapped)
+            sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
+
+        if (oShieldBreaker.getValue() && target instanceof PlayerEntity)
+            shieldBreak();
+
+        if (mc.player.isGliding() && oElytraTarget.getValue()
+                && (fireWork.passedMs(1200L) || betterTarget.getValue())) {
+            sendFireWork();
+            fireWork.reset();
+        }
+
+        attackTimer.reset();
+        ticksSinceHit = 0;
+    }
+
+    private void shieldBreak() {
+        int prevSlot = mc.player.getInventory().selectedSlot;
+        int axe = -1;
+        for (int i = 0; i < 9; i++)
+            if (mc.player.getInventory().getStack(i).getItem().toString().toLowerCase().contains("axe")) {
+                axe = i;
+                break;
+            }
+        if (axe == -1) return;
+        sendPacket(new UpdateSelectedSlotC2SPacket(axe));
+        mc.interactionManager.attackEntity(mc.player, target);
+        mc.player.swingHand(Hand.MAIN_HAND);
+        sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
+    }
+
+    private void disableSprint() {
+        if (mc.player.isGliding()) return;
+        if (!Core.serverSprint && !mc.player.isSprinting()) return;
+        mc.player.setSprinting(false);
+        mc.options.sprintKey.setPressed(false);
+        sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.STOP_SPRINTING));
+    }
+
+    private void sendFireWork() {
+        int prevSlot = mc.player.getInventory().selectedSlot;
+        int fw = -1;
+        for (int i = 0; i < 9; i++)
+            if (mc.player.getInventory().getStack(i).getItem() == Items.FIREWORK_ROCKET) {
+                fw = i;
+                break;
+            }
+        if (fw == -1) return;
+        if (fw != prevSlot) sendPacket(new UpdateSelectedSlotC2SPacket(fw));
+        mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+        mc.player.swingHand(Hand.MAIN_HAND);
+        if (fw != prevSlot) sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
+    }
+
+    public enum EspColorMode {
+        Sync, Custom
+    }
+
+    /** The marker's colour: the client accent, or the one set here. */
+    private java.awt.Color espColor() {
+        return espColorMode.getValue() == EspColorMode.Sync
+                ? thunder.hack.features.modules.client.HudEditor.getColor(0)
+                : espCustomColor.getValue().getColorObject();
+    }
+
+    public LivingEntity getTarget() {
+        return target;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Backtrack                                                           */
+    /* ------------------------------------------------------------------ */
+
+    /** One held packet and the moment it arrived. */
+    private record HeldMove(Packet<net.minecraft.network.listener.ClientPlayPacketListener> packet, long arrivedAt) {
+    }
+
+    /**
+     * Held packets, newest last.
+     *
+     * <p>A concurrent deque because the two ends of this run on different threads: packets arrive on the
+     * network thread and are let out on the game thread. A plain ArrayDeque touched from both is a race
+     * - at best a packet goes missing, at worst the iteration throws and the queue is never drained,
+     * which looks exactly like the feature doing nothing.
+     */
+    private final java.util.concurrent.ConcurrentLinkedDeque<HeldMove> heldMoves = new java.util.concurrent.ConcurrentLinkedDeque<>();
+    /** The entity the queue belongs to. A change here empties it immediately. */
+    private int heldFor = -1;
+    /** True while we are the ones applying, so a released packet is not caught again. */
+    private boolean releasingMoves;
+
+    /**
+     * Catches the target's movement packets and parks them.
+     *
+     * <p>Deliberately narrow: one entity, position packets only, and only while that entity is the
+     * aura's current target. Anything else - your own position, other players, every non-movement
+     * packet - goes straight through untouched.
+     */
+    @EventHandler
+    @SuppressWarnings("unused")
+    public void onBacktrackReceive(thunder.hack.events.impl.PacketEvent.Receive event) {
+        if (releasingMoves || !btEnabled.getValue() || mc.world == null || mc.player == null) return;
+
+        LivingEntity current = target;
+        if (current == null) {
+            releaseMoves();
+            return;
+        }
+
+        // A new target means the queue describes somebody else's past. Let it out before touching it.
+        if (heldFor != current.getId()) {
+            releaseMoves();
+            heldFor = current.getId();
+        }
+
+        int id;
+        if (event.getPacket() instanceof EntityS2CPacket move) {
+            Entity moved = move.getEntity(mc.world);
+            if (moved == null) return;
+            id = moved.getId();
+        } else if (event.getPacket() instanceof EntityPositionSyncS2CPacket sync) {
+            id = sync.id();
+        } else {
+            return;
+        }
+
+        if (id != current.getId() || id == mc.player.getId()) return;
+
+        event.cancel();
+        heldMoves.add(new HeldMove(event.getPacket(), System.currentTimeMillis()));   // both branches above are play packets
+    }
+
+    /**
+     * Lets out everything that has been held long enough, oldest first.
+     *
+     * <p>Called every tick. The age is per packet, so the target's position advances smoothly a fixed
+     * amount behind rather than jumping forward in bursts.
+     */
+    private void tickBacktrack() {
+        if (!btEnabled.getValue() || target == null || heldFor != target.getId()) {
+            releaseMoves();
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        while (!heldMoves.isEmpty() && now - heldMoves.peek().arrivedAt() >= btDelay.getValue())
+            apply(heldMoves.poll());
+
+        // A queue that stops draining is worse than no backtrack at all: the target freezes where he
+        // was and never catches up. Anything far past the delay goes out regardless.
+        while (heldMoves.size() > 40) apply(heldMoves.poll());
+    }
+
+    /** Applies everything still held, in order. Used whenever the queue stops being valid. */
+    private void releaseMoves() {
+        heldFor = -1;
+        while (!heldMoves.isEmpty()) apply(heldMoves.poll());
+    }
+
+    private void apply(HeldMove held) {
+        if (held == null || mc.getNetworkHandler() == null) return;
+
+        releasingMoves = true;
+        try {
+            held.packet().apply(mc.getNetworkHandler());
+        } catch (Throwable ignored) {
+            // A packet for an entity that has since despawned throws rather than doing nothing. Dropping
+            // it is correct - there is nothing left for it to move.
+        } finally {
+            releasingMoves = false;
+        }
+    }
+
+    public enum Sort {
+        Distance, Health
+    }
+
+    public enum AimPoint {
+        Nearest, HolyWorld, SpookyTime, DistanceBased
+    }
+
+    public enum Rotate {
+        AimAssist,  // kamera plynnie jedzie na cel (czujesz, ale gladko - bez trzesienia)
+        Silent,     // tylko model/serwer, kamera stoi
+        Off         // bez rotacji (tylko atak)
+    }
+
+    /**
+     * Four glowing rounded corner brackets CENTRED on the target. Built from the target centre projected to the
+     * screen (one point, so it works in first person and at point-blank where hitbox corners fall behind the near
+     * plane), sized by the target's on-screen height.
+     */
+    private void drawMarkerEsp(net.minecraft.client.gui.DrawContext context, LivingEntity t) {
+        double d = Render3DEngine.getTickDelta();
+        double cx = t.lastX + (t.getX() - t.lastX) * d;
+        double cy = t.lastY + (t.getY() - t.lastY) * d;
+        double cz = t.lastZ + (t.getZ() - t.lastZ) * d;
+        double h = t.getHeight();
+
+        Vec3d mid = Render3DEngine.worldSpaceToScreenSpace(new Vec3d(cx, cy + h * 0.5, cz));
+        Vec3d top = Render3DEngine.worldSpaceToScreenSpace(new Vec3d(cx, cy + h, cz));
+        Vec3d bot = Render3DEngine.worldSpaceToScreenSpace(new Vec3d(cx, cy, cz));
+        if (!(mid.z > 0 && mid.z < 1)) return;
+
+        // half-size of the marker square: half the target's on-screen height, clamped so it never gets silly
+        float half = (float) Math.abs(top.y - bot.y) * 0.5f;
+        if (!(top.z > 0 && top.z < 1) || !(bot.z > 0 && bot.z < 1)) half = 26f; // behind near plane -> fixed size
+        half = net.minecraft.util.math.MathHelper.clamp(half, 14f, 160f);
+
+        // The marker IS a picture. Your own PNG wins: drop capture.png (any name) as marker.png into
+        // <gamedir>/Cloudan/misc/markers/ and it is used; otherwise the built-in fx_marker. White+alpha = tinted by
+        // the ESP colour + additive; a full-colour PNG keeps its own colours.
+        Identifier user = thunder.hack.utility.render.UserImages.get("markers", "marker", MARKER_README);
+        Identifier tex = user != null ? user : TextureStorage.fxMarker;
+        float size = half * 2.2f;
+        float mx = (float) mid.x - size / 2f, my = (float) mid.y - size / 2f;
+        java.awt.Color col = Render2DEngine.injectAlpha(espColor(), 255);
+        Render2DEngine.renderGradientTexture(context, tex,
+                mx, my, size, size, 0, 0, 1, 1, 1, 1, col, col, col, col, true);
+    }
+
+    private static final String MARKER_README = """
+            Wlasny obrazek markera (Kilaura -> TargetEsp -> Marker).
+              marker.png - wrzuc tu swoj obrazek (np. capture.png przemianowany na marker.png)
+            Bialy + alfa = marker przyjmuje kolor ESP. Kolorowy PNG zostaje w swoich kolorach.
+            Zmiany widac po ~2 sekundach. Usun plik = wraca wbudowany.
+            """;
+
+    public enum Esp {
+        Off, Cloudan, Gombal, NurikZapen, CelkaPasta, GombalV2, GombalV3, Marker
+    }
+
+}

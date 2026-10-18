@@ -1,0 +1,154 @@
+package thunder.hack.features.modules.render;
+
+import com.google.common.collect.Maps;
+import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.network.OtherClientPlayerEntity;
+import net.minecraft.client.render.*;
+import net.minecraft.client.render.entity.EntityRendererFactory;
+import net.minecraft.client.render.entity.model.EntityModelLayers;
+import net.minecraft.client.render.entity.model.PlayerEntityModel;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.network.packet.s2c.play.PlayerListS2CPacket;
+import net.minecraft.network.packet.s2c.play.PlayerRemoveS2CPacket;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.math.RotationAxis;
+import net.minecraft.util.math.Vec3d;
+import org.jetbrains.annotations.NotNull;
+import org.joml.Vector3f;
+import org.joml.Vector4d;
+import thunder.hack.events.impl.PacketEvent;
+import thunder.hack.gui.font.FontRenderers;
+import thunder.hack.injection.accesors.IEntity;
+import thunder.hack.features.modules.Module;
+import thunder.hack.features.modules.misc.FakePlayer;
+import thunder.hack.setting.Setting;
+import thunder.hack.setting.impl.ColorSetting;
+import thunder.hack.utility.math.MathUtility;
+import thunder.hack.utility.render.Render2DEngine;
+import thunder.hack.utility.render.Render3DEngine;
+
+import java.awt.*;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.UUID;
+
+public class LogoutSpots extends Module {
+    public LogoutSpots() {
+        super("LogoutSpots", Category.RENDER);
+    }
+
+    private final Setting<RenderMode> renderMode = new Setting<>("RenderMode", RenderMode.TexturedChams);
+    private final Setting<ColorSetting> color = new Setting<>("Color", new ColorSetting(0x8800FF00));
+    private final Setting<Boolean> notifications = new Setting<>("Notifications", true);
+    private final Setting<Boolean> ignoreBots = new Setting<>("IgnoreBots", true);
+
+    private final Map<UUID, PlayerEntity> playerCache = Maps.newConcurrentMap();
+    private final Map<UUID, PlayerEntity> logoutCache = Maps.newConcurrentMap();
+
+    @EventHandler
+    public void onPacketReceive(PacketEvent.Receive e) {
+        if (e.getPacket() instanceof PlayerListS2CPacket pac) {
+            if (pac.getActions().contains(PlayerListS2CPacket.Action.ADD_PLAYER)) {
+                for (PlayerListS2CPacket.Entry ple : pac.getPlayerAdditionEntries()) {
+                    for (UUID uuid : logoutCache.keySet()) {
+                        if (!uuid.equals(ple.profile().id())) continue;
+                        PlayerEntity pl = logoutCache.get(uuid);
+                        if (ignoreBots.getValue() && isABot(pl)) continue;
+                        if (notifications.getValue())
+                            sendMessage(pl.getName().getString() + " logged back at  X: " + (int) pl.getX() + " Y: " + (int) pl.getY() + " Z: " + (int) pl.getZ());
+                        logoutCache.remove(uuid);
+                    }
+                }
+            }
+            playerCache.clear();
+        }
+
+        if (e.getPacket() instanceof PlayerRemoveS2CPacket pac) {
+            for (UUID uuid2 : pac.profileIds) {
+                for (UUID uuid : playerCache.keySet()) {
+                    if (!uuid.equals(uuid2)) continue;
+                    final PlayerEntity pl = playerCache.get(uuid);
+                    if (ignoreBots.getValue() && isABot(pl)) continue;
+                    if (pl != null) {
+                        if (notifications.getValue())
+                            sendMessage(pl.getName().getString() + " logged out at  X: " + (int) pl.getX() + " Y: " + (int) pl.getY() + " Z: " + (int) pl.getZ());
+                        if (!logoutCache.containsKey(uuid))
+                            logoutCache.put(uuid, pl);
+                    }
+                }
+            }
+            playerCache.clear();
+        }
+    }
+
+    @Override
+    public void onEnable() {
+        playerCache.clear();
+        logoutCache.clear();
+    }
+
+    @Override
+    public void onUpdate() {
+        for (PlayerEntity player : mc.world.getPlayers()) {
+            if (player == null || player.equals(mc.player)) continue;
+            playerCache.put(player.getGameProfile().id(), player);
+        }
+    }
+
+    public void onRender2D(DrawContext context) {
+        // The box is projected here instead of going through the world-space 3D queue, which
+        // double-rotates on 1.21.11 and made the logout marker slide around as you walked.
+        Color col = color.getValue().getColorObject();
+        for (UUID uuid : logoutCache.keySet()) {
+            final PlayerEntity data = logoutCache.get(uuid);
+            if (data != null)
+                Render3DEngine.drawProjectedBox(context, data.getBoundingBox(),
+                        Render2DEngine.injectAlpha(col, 40), Render2DEngine.injectAlpha(col, 40),
+                        Render2DEngine.injectAlpha(col, 255), 2f, true, true);
+        }
+
+        for (UUID uuid : logoutCache.keySet()) {
+            final PlayerEntity data = logoutCache.get(uuid);
+            if (data != null) {
+                Vec3d vector = new Vec3d(data.getX(), data.getY() + 2, data.getZ());
+                Vector4d position = null;
+
+                vector = Render3DEngine.worldSpaceToScreenSpace(new Vec3d(vector.x, vector.y, vector.z));
+                if (vector.z > 0 && vector.z < 1) {
+                    position = new Vector4d(vector.x, vector.y, vector.z, 0);
+                    position.x = Math.min(vector.x, position.x);
+                    position.y = Math.min(vector.y, position.y);
+                    position.z = Math.max(vector.x, position.z);
+                }
+
+                String string = data.getName().getString() + " " + String.format("%.1f", (data.getHealth() + data.getAbsorptionAmount())) + " X: " + (int) data.getX() + " " + " Z: " + (int) data.getZ();
+
+                if (position != null) {
+                    float diff = (float) (position.z - position.x) / 2;
+                    float textWidth = (FontRenderers.sf_bold.getStringWidth(string) * 1);
+                    float tagX = (float) ((position.x + diff - textWidth / 2) * 1);
+
+                    Render2DEngine.drawRect(context, tagX - 2, (float) (position.y - 13f), textWidth + 4, 11, new Color(0x99000001, true));
+                    FontRenderers.sf_bold.drawString(context, string, tagX, (float) position.y - 10, -1);
+                }
+            }
+        }
+    }
+
+    // 1.21.6+ stub: entity-model chams rendering used the removed Tessellator/BufferBuilder immediate
+    // path and the reworked PlayerEntityModel animateModel/setAngles API. Disabled until reimplemented
+    // on RenderPipeline; LogoutSpots falls back to box outline rendering (see onRender3D).
+
+    private boolean isABot(PlayerEntity ent) {
+        return !ent.getUuid().equals(UUID.nameUUIDFromBytes(("OfflinePlayer:" + ent.getName().getString()).getBytes(StandardCharsets.UTF_8))) && ent instanceof OtherClientPlayerEntity
+                && (FakePlayer.fakePlayer == null || ent.getId() != FakePlayer.fakePlayer.getId())
+                && !ent.getName().getString().contains("-");
+    }
+
+    private enum RenderMode {
+        Chams, TexturedChams, Box
+    }
+}

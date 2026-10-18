@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "gombal",
+  "version": "${version}",
+  "icon": "icon.png",
+  "name": "GlobalDLC",
+  "description": "GlobalDLC client",
+  "authors": [
+    {
+      "name": "pan4ur",
+      "contact": {
+        "discord": "pan4ur"
+      }
+    },
+    {
+      "name": "06ED",
+      "contact": {
+        "discord": "dinner_enjoyer"
+      }
+    }
+  ],
+  "license": "GNU General Public License v3.0",
+  "accessWidener": "gombal.accesswidener",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "thunder.hack.ThunderHack"
+    ]
+  },
+  "mixins": [
+    "gombal.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.2",
+    "minecraft": ">=1.21.11",
+    "java": ">=21"
+  },
+  "suggests": {
+    "sodium": "*",
+    "exordium": "*",
+    "starlight": "*",
+    "ias": "*",
+    "viafabricplus": "*"
+  }
+}

@@ -1,0 +1,56 @@
+# gradle
+
+.gradle/
+build/
+out/
+classes/
+
+# eclipse
+
+*.launch
+
+# idea
+
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# vscode
+
+.settings/
+.vscode/
+bin/
+.classpath
+.project
+
+# macos
+
+*.DS_Store
+
+# fabric
+
+run/
+
+# java
+
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr
+
+# logs / dev leftovers
+logs/
+*.log
+
+# injector - zbudowane jary i runtime
+injector/out/
+injector/*.jar
+injector/data/
+injector/META-INF/
+injector/*.txt
+
+# narzedzia AI / podglady
+.claude/
+.freebuff/
+preview/

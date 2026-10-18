@@ -1,0 +1,108 @@
+{
+  "keypress": {
+    "sounds": [
+      "gombal:keypress"
+    ]
+  },
+  "keyrelease": {
+    "sounds": [
+      "gombal:keyrelease"
+    ]
+  },
+  "uwu": {
+    "sounds": [
+      "gombal:uwu"
+    ]
+  },
+  "disable": {
+    "sounds": [
+      "gombal:disable"
+    ]
+  },
+  "enable": {
+    "sounds": [
+      "gombal:enable"
+    ]
+  },
+  "moan1": {
+    "sounds": [
+      "gombal:moan1"
+    ]
+  },
+  "moan2": {
+    "sounds": [
+      "gombal:moan2"
+    ]
+  },
+  "moan3": {
+    "sounds": [
+      "gombal:moan3"
+    ]
+  },
+  "moan4": {
+    "sounds": [
+      "gombal:moan4"
+    ]
+  },
+  "skeet": {
+    "sounds": [
+      "gombal:skeet"
+    ]
+  },
+  "orthodox": {
+    "sounds": [
+      "gombal:orthodox"
+    ]
+  },
+  "boolean": {
+    "sounds": [
+      "gombal:boolean"
+    ]
+  },
+  "scroll": {
+    "sounds": [
+      "gombal:scroll"
+    ]
+  },
+  "swipein": {
+    "sounds": [
+      "gombal:swipein"
+    ]
+  },
+  "swipeout": {
+    "sounds": [
+      "gombal:swipeout"
+    ]
+  },
+  "pmsound": {
+    "sounds": [
+      "gombal:pmsound"
+    ]
+  },
+  "rifk": {
+    "sounds": [
+      "gombal:rifk"
+    ]
+  },
+  "cutie": {
+    "sounds": [
+      "gombal:cutie"
+    ]
+  },
+  "ambient.birds_wind": {
+    "sounds": [
+      {
+        "name": "gombal:ambient/birds_wind",
+        "stream": true
+      }
+    ]
+  },
+  "ambient.rainy_night": {
+    "sounds": [
+      {
+        "name": "gombal:ambient/rainy_night",
+        "stream": true
+      }
+    ]
+  }
+}

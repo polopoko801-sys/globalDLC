@@ -1,0 +1,26 @@
+accessWidener	v1	named
+
+accessible field net/minecraft/entity/player/PlayerInventory selectedSlot I
+mutable field net/minecraft/entity/player/PlayerInventory selectedSlot I
+accessible field net/minecraft/entity/player/PlayerInventory main Lnet/minecraft/util/collection/DefaultedList;
+accessible field net/minecraft/client/input/Input movementVector Lnet/minecraft/util/math/Vec2f;
+accessible field net/minecraft/client/gui/DrawContext state Lnet/minecraft/client/gui/render/state/GuiRenderState;
+
+accessible   class   net/minecraft/network/packet/c2s/play/PlayerInteractEntityC2SPacket$InteractTypeHandler
+accessible   class   net/minecraft/network/packet/c2s/play/PlayerInteractEntityC2SPacket$InteractType
+accessible class net/minecraft/network/packet/c2s/play/PlayerInteractEntityC2SPacket
+accessible field net/minecraft/client/network/ClientPlayerEntity lastSprinting Z
+accessible field net/minecraft/entity/projectile/FishingBobberEntity CAUGHT_FISH Lnet/minecraft/entity/data/TrackedData;
+accessible field net/minecraft/network/packet/c2s/play/PlayerMoveC2SPacket onGround Z
+accessible field net/minecraft/network/packet/c2s/play/PlayerMoveC2SPacket pitch F
+accessible field net/minecraft/network/packet/c2s/play/ChatMessageC2SPacket chatMessage Ljava/lang/String;
+accessible field net/minecraft/network/packet/s2c/play/PlayerRemoveS2CPacket profileIds Ljava/util/List;
+accessible field net/minecraft/client/network/ClientPlayerInteractionManager currentBreakingProgress F
+accessible field net/minecraft/client/Mouse cursorDeltaY D
+accessible field net/minecraft/client/Mouse cursorDeltaX D
+accessible field net/minecraft/entity/Entity hasVisualFire Z
+accessible field net/minecraft/network/packet/s2c/play/GameMessageS2CPacket content Lnet/minecraft/text/Text;
+accessible field net/minecraft/block/spawner/MobSpawnerLogic spawnDelay I
+accessible class net/minecraft/client/gui/hud/InGameHud$HeartType
+accessible method net/minecraft/network/packet/c2s/play/PlayerInteractEntityC2SPacket write (Lnet/minecraft/network/PacketByteBuf;)V
+accessible method net/minecraft/client/world/ClientWorld getPendingUpdateManager ()Lnet/minecraft/client/network/PendingUpdateManager;
