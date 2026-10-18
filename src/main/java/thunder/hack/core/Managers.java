@@ -30,6 +30,8 @@ public class Managers {
     public static final HoleManager HOLE = new HoleManager(); //todo ???
     public static final WayPointManager WAYPOINT = new WayPointManager();
 
+
+
     // Client
     public static final AddonManager ADDON = new AddonManager();
     public static final AsyncManager ASYNC = new AsyncManager();

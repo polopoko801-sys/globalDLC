@@ -33,6 +33,8 @@ public final class TargetState {
     private TargetState() {
     }
 
+
+
     /** What the HUD is allowed to say about a target, beyond its numbers. */
     public enum Status {
         /** Nothing special - a plain, hittable target. */
