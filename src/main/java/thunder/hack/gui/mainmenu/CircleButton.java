@@ -101,19 +101,6 @@ public final class CircleButton {
             Render2DEngine.drawRound(context, drawX - r, cy - r + 2f, r * 2f, r * 2f, r, new Color(0, 0, 0, a));
         }
 
-        // Accent glow on hover: soft coloured rings blooming out behind the disc, in the client accent colour.
-        // This is what makes the button feel alive and premium rather than a flat grey puck.
-        if (hover > 0.01f) {
-            Color accent = thunder.hack.features.modules.client.HudEditor.getColor(0);
-            for (int ring = 6; ring >= 1; ring--) {
-                float r = radiusNow + ring * 3.0f * hover;
-                int a = Math.round(70 * hover * (1f - ring / 7f) * shown);
-                if (a <= 0) continue;
-                Render2DEngine.drawRound(context, drawX - r, cy - r, r * 2f, r * 2f, r,
-                        Render2DEngine.injectAlpha(accent, a));
-            }
-        }
-
         // The glass disc - a vertical two-tone (lighter top, darker bottom) reads as a lit curved surface.
         int fill = Math.round((206 + 34 * hover) * shown);
         Render2DEngine.drawRound(context, left, top, diameter, diameter, radiusNow,
