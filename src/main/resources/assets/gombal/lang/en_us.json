@@ -174,6 +174,7 @@
   "descriptions.render.viewmodel": "Hands modification.",
   "descriptions.render.voidesp": "Highlights void holes.",
   "descriptions.render.particles": "Various particles in the world.",
+  "descriptions.render.lyricstext": "Sings along with the track playing on Spotify, one synced line at a time.",
 
   "descriptions.movement.antivoid": "Keeps you from falling into the void.",
   "descriptions.movement.antiweb": "Action when collided with a spider web.",

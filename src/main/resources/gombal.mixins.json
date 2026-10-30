@@ -8,7 +8,6 @@
     "MixinBlockCollisionSpliterator",
     "MixinBossBarHud",
     "MixinCamera",
-    "MixinCapeFeatureRenderer",
     "MixinChatInputSuggestor",
     "MixinClientBrandRetriever",
     "MixinClientConnection",

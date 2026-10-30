@@ -19,7 +19,12 @@ import java.util.List;
  * how a list on the HUD looks, and the two stacks can never drift apart.
  */
 public class ModuleList extends HudElement {
-    private final Setting<HudListStyle.Mode> mode = new Setting<>("Mode", HudListStyle.Mode.Glass);
+    /** The Potions-style glass panel, each module sliding in from the left and out to the left. */
+    private final Setting<Boolean> liquidGlass = new Setting<>("LiquidGlass", true);
+    private final Setting<String> glassTitle = new Setting<>("Title", "Modules", v -> liquidGlass.getValue());
+    /** Off: just the module name ("Kilaura"), without its mode or info on the right ("Kilaura  Packet"). */
+    private final Setting<Boolean> showInfo = new Setting<>("ShowInfo", false, v -> liquidGlass.getValue());
+    private final Setting<HudListStyle.Mode> mode = new Setting<>("Mode", HudListStyle.Mode.Glass, v -> !liquidGlass.getValue());
     private final Setting<Boolean> small = new Setting<>("SmallFont", false);
     /** Frosted backdrop behind every row. Independent of the global HudStyle, and colours stay on top. */
     private final Setting<Boolean> blur = new Setting<>("Blur", false);
@@ -39,6 +44,11 @@ public class ModuleList extends HudElement {
         super.onRender2D(context);
 
         boolean reverse = getPosX() > (mc.getWindow().getScaledWidth() / 2f);
+
+        if (liquidGlass.getValue()) {
+            drawGlass(context, reverse);
+            return;
+        }
         HudListStyle.Style style = new HudListStyle.Style(mode.getValue(), small.getValue(), reverse,
                 glow.getValue(), glowStrength.getValue(),
                 color3.getValue().getColorObject(), color4.getValue().getColorObject(), blur.getValue());
@@ -71,6 +81,32 @@ public class ModuleList extends HudElement {
         }
 
         setBounds(getPosX(), getPosY(), (int) maxWidth * (reverse ? -1 : 1), offset);
+    }
+
+    private final thunder.hack.features.hud.RowAnimator<Module> slide = new thunder.hack.features.hud.RowAnimator<>(260f);
+
+    /** LiquidGlass: name on the left, its info on the right, longest first, each row animated in and out. */
+    private void drawGlass(DrawContext context, boolean reverse) {
+        slide.frame();
+        var font = GlassPanel.font();
+        List<Module> all = new java.util.ArrayList<>(Managers.MODULE.modules);
+        all.sort(Comparator.comparingDouble(m -> -font.getStringWidth(m.getDisplayName() + (!showInfo.getValue() || m.getDisplayInfo() == null ? "" : m.getDisplayInfo()))));
+
+        List<GlassPanel.Row> rows = new java.util.ArrayList<>();
+        for (Module m : all) {
+            float p = slide.update(m, m.isEnabled() && shouldRender(m));
+            if (p <= 0f) continue;
+            String info = showInfo.getValue() ? m.getDisplayInfo() : null;
+            rows.add(new GlassPanel.Row(null, m.getDisplayName(), info == null ? "" : info, p));
+        }
+        if (rows.isEmpty()) {
+            setBounds(getPosX(), getPosY(), 0, 0);
+            return;
+        }
+        float w = GlassPanel.width(glassTitle.getValue(), rows, 90);
+        float x = reverse ? getPosX() - w : getPosX();
+        GlassPanel.draw(context, x, getPosY(), w, glassTitle.getValue(), null, rows, thunder.hack.features.modules.client.HudEditor.getColor(0));
+        setBounds(getPosX(), getPosY(), w * (reverse ? -1 : 1), GlassPanel.height(rows));
     }
 
     /** The " [info]" half of a row, or null when the module has nothing to add. */

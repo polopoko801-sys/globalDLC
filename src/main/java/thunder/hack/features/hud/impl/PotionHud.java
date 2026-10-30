@@ -120,11 +120,10 @@ public class PotionHud extends HudElement {
 
     /** LiquidGlass: icon, "Name 2", "mm:ss" per effect on the glass panel; hidden when there are none. */
     private void drawGlass(DrawContext context, List<StatusEffectInstance> potions, Color tint) {
-        if (potions.isEmpty()) {
-            setBounds(getPosX(), getPosY(), 0, 0);
-            return;
-        }
-        List<GlassPanel.Row> rows = new ArrayList<>();
+        // Effects slide in from the left one after another and slide back out to the left when they end. An
+        // ended effect is gone from the player, so its last row is remembered to animate it out.
+        slide.frame();
+        java.util.Set<Object> active = new java.util.HashSet<>();
         for (StatusEffectInstance p : potions) {
             net.minecraft.util.Identifier id = net.minecraft.registry.Registries.STATUS_EFFECT.getId(p.getEffectType().value());
             net.minecraft.util.Identifier icon = id == null ? null : net.minecraft.util.Identifier.of(id.getNamespace(), "textures/mob_effect/" + id.getPath() + ".png");
@@ -135,12 +134,35 @@ public class PotionHud extends HudElement {
                 int s = p.getDuration() / 20;
                 time = String.format("%02d:%02d", s / 60, s % 60);
             }
-            rows.add(new GlassPanel.Row(icon, name, time));
+            Object key = p.getEffectType().value();
+            active.add(key);
+            lastRows.put(key, new GlassPanel.Row(icon, name, time));
+        }
+
+        List<GlassPanel.Row> rows = new ArrayList<>();
+        var it = lastRows.entrySet().iterator();
+        while (it.hasNext()) {
+            var e = it.next();
+            float anim = slide.update(e.getKey(), active.contains(e.getKey()));
+            if (anim <= 0f && !active.contains(e.getKey())) {
+                it.remove();
+                continue;
+            }
+            GlassPanel.Row r = e.getValue();
+            rows.add(new GlassPanel.Row(r.icon(), r.left(), r.right(), anim));
+        }
+        if (rows.isEmpty()) {
+            setBounds(getPosX(), getPosY(), 0, 0);
+            return;
         }
         float w = GlassPanel.width(glassTitle.getValue(), rows, 100);
         GlassPanel.draw(context, getPosX(), getPosY(), w, glassTitle.getValue(), thunder.hack.utility.render.TextureStorage.potionIcon, rows, tint);
-        setBounds(getPosX(), getPosY(), w, GlassPanel.height(rows.size()));
+        setBounds(getPosX(), getPosY(), w, GlassPanel.height(rows));
     }
+
+    private final thunder.hack.features.hud.RowAnimator<Object> slide = new thunder.hack.features.hud.RowAnimator<>(260f);
+    /** Each effect's last row, in first-seen order, so an ended one can still slide out. */
+    private final java.util.Map<Object, GlassPanel.Row> lastRows = new java.util.LinkedHashMap<>();
 
     /** Potion.getDurationString: m:ss, "**:**" for an endless effect. Also used by NameTags. */
     public static String getDuration(StatusEffectInstance pe) {

@@ -44,6 +44,13 @@ public class Particles extends Module {
     private final Setting<Boolean> useSquares = new Setting<>("Squares", true).addToGroup(types);
     /** Off by default: a cloud of solid cubes is a very different look, and nobody asked the mixture for it. */
     private final Setting<Boolean> useCubes = new Setting<>("Cubes", false).addToGroup(types);
+    private final Setting<Boolean> useMarker = new Setting<>("Marker", false).addToGroup(types);
+    /** How long a Marker comet's tail is, in ticks of its own travel. */
+    /** Tail length in ticks of travel - short by default, a few head-lengths, like a falling spark. */
+    private final Setting<Float> tail = new Setting<>("Tail", 1.5f, 0.5f, 12f, v -> mode.getValue() == Mode.Marker || mode.getValue() == Mode.All);
+    /** The comets' own tint - pale mint by default, like falling stars, independent of ColorMode. */
+    private final Setting<ColorSetting> markerColor = new Setting<>("MarkerColor", new ColorSetting(new Color(200, 255, 215).getRGB()),
+            v -> mode.getValue() == Mode.Marker || mode.getValue() == Mode.All);
     private final Setting<Integer> count = new Setting<>("Count", 100, 20, 800);
     private final Setting<Float> size = new Setting<>("Size", 1f, 0.1f, 6.0f);
     // spread radius in blocks: how wide the cloud scatters around you (default ~20-block-wide cloud)
@@ -91,6 +98,15 @@ public class Particles extends Module {
                 float[] p = domePoint(radius.getValue() * shell);
                 double sx = mc.player.getX() + p[0], sy = mc.player.getY() + p[1], sz = mc.player.getZ() + p[2];
                 if (!isAir(sx, sy, sz)) continue; // never spawn inside terrain / underground
+                if (kind == Mode.Marker) {
+                    // a comet: one steady slanted fall, the same heading for its whole life
+                    double heading = MathUtility.random(0f, (float) (Math.PI * 2.0));
+                    float drift = MathUtility.random(0.04f, 0.09f);
+                    particles.add(new ParticleBase((float) sx, (float) sy + radius.getValue() * 0.5f, (float) sz,
+                            (float) (Math.cos(heading) * drift), MathUtility.random(-0.22f, -0.12f),
+                            (float) (Math.sin(heading) * drift), kind));
+                    continue;
+                }
                 particles.add(new ParticleBase((float) sx, (float) sy, (float) sz,
                         drop ? 0 : MathUtility.random(-0.4f, 0.4f),
                         drop ? MathUtility.random(-0.2f, -0.05f) : MathUtility.random(-0.1f, 0.1f),
@@ -115,6 +131,7 @@ public class Particles extends Module {
         if (useBloom.getValue()) enabled.add(Mode.Bloom);
         if (useSquares.getValue()) enabled.add(Mode.Squares);
         if (useCubes.getValue()) enabled.add(Mode.Cube);
+        if (useMarker.getValue()) enabled.add(Mode.Marker);
 
         if (enabled.isEmpty()) return null;
         return enabled.get((int) MathUtility.random(0, enabled.size() - 0.001f));
@@ -127,6 +144,7 @@ public class Particles extends Module {
             case Stars -> 0.82f;
             case Squares -> 0.66f;
             case Cube -> 0.74f;
+            case Marker -> 0.90f;
             case Bloom -> 0.52f;
             case Hearts -> 0.40f;
             default -> 0.30f;
@@ -282,6 +300,15 @@ public class Particles extends Module {
             prevposY = posY;
             prevposZ = posZ;
 
+            if (kind == Mode.Marker) {
+                // a comet keeps its speed and burns out on the first block it meets - resting on the ground
+                // would collapse the tail into a dot
+                posX += motionX;
+                posY += motionY;
+                posZ += motionZ;
+                return !isAir(posX, posY, posZ);
+            }
+
             if (stopOnGround.getValue()) {
                 // block collision so particles rest on the ground instead of sinking through it
                 if (isAir(posX + motionX, posY, posZ)) posX += motionX; else motionX = 0;
@@ -334,6 +361,12 @@ public class Particles extends Module {
                 return;
             }
 
+            if (kind == Mode.Marker) {
+                renderComet(context, world, new Vec3d(motionX, motionY, motionZ),
+                        Render2DEngine.injectAlpha(markerColor.getValue().getColorObject(), col.getAlpha()));
+                return;
+            }
+
             Vec3d screen = Render3DEngine.worldSpaceToScreenSpace(world);
             if (!(screen.z > 0 && screen.z < 1)) return;
 
@@ -342,6 +375,65 @@ public class Particles extends Module {
 
             drawParticle(context, textureFor(kind), (float) screen.x, (float) screen.y, pixel, col);
         }
+    }
+
+    /**
+     * A Marker comet: glow sprites laid along the path it just travelled, shrinking and fading towards the
+     * tail, with a small white-hot core on the head. Projected point by point, so the tail follows the
+     * real direction of flight from any camera angle.
+     */
+    private void renderComet(DrawContext context, Vec3d head, Vec3d motion, Color col) {
+        Vec3d cam = mc.getEntityRenderDispatcher().camera.getCameraPos();
+        Vec3d end = head.subtract(motion.multiply(tail.getValue()));
+
+        Vec3d h = Render3DEngine.worldSpaceToScreenSpace(head);
+        if (!(h.z > 0 && h.z < 1)) return;
+        Vec3d t = Render3DEngine.worldSpaceToScreenSpace(end);
+        boolean tailOnScreen = t.z > 0 && t.z < 1;
+
+        double dist = cam.distanceTo(head);
+        // a clearly visible teardrop head at any distance (it used to be ~1px a few blocks out)
+        float width = Math.max(2.5f, (float) (size.getValue() * 28.0 / Math.max(1.0, dist)));
+        int a = col.getAlpha();
+
+        // the streak: one tapered sprite (fx_streak - broad and bright at the top, a hair at the bottom) turned to
+        // lie along the path on screen, head at the comet, tail trailing back the way it came
+        if (tailOnScreen) {
+            float dx = (float) (t.x - h.x), dy = (float) (t.y - h.y);
+            float length = (float) Math.sqrt(dx * dx + dy * dy);
+            if (length > 1f) {
+                var m = context.getMatrices();
+                m.pushMatrix();
+                m.translate((float) h.x, (float) h.y);
+                // the sprite's +y runs head -> tail, so turn +y onto the screen direction of the tail
+                m.rotate((float) (Math.atan2(dy, dx) - Math.PI / 2));
+                // bloom under the tail: a wider, fainter copy, so the streak glows instead of being a flat line
+                Color bloom = Render2DEngine.injectAlpha(col, Math.round(a * 0.4f));
+                Render2DEngine.renderGradientTexture(context, TextureStorage.fxStreak,
+                        -width * 1.3f, -width * 0.5f, width * 2.6f, length + width * 0.5f,
+                        0, 0, 64, 256, 64, 256, bloom, bloom, bloom, bloom, true);
+                Color streak = Render2DEngine.injectAlpha(col, a);
+                Render2DEngine.renderGradientTexture(context, TextureStorage.fxStreak,
+                        -width / 2f, -width * 0.2f, width, length + width * 0.2f,
+                        0, 0, 64, 256, 64, 256, streak, streak, streak, streak, true);
+                m.popMatrix();
+            }
+        }
+
+        // Glow: ghostGlow is a hot centre with a long soft falloff - the right texture for light, where firefly's
+        // halo is short. A wide faint halo, a tighter brighter one, then the nearly white core.
+        float hx = (float) h.x, hy = (float) h.y;
+        drawGlow(context, hx, hy, width * 5f, Render2DEngine.injectAlpha(col, Math.round(a * 0.55f)));
+        drawGlow(context, hx, hy, width * 2.4f, Render2DEngine.injectAlpha(col, a));
+        Color core = new Color(240, 255, 245, a);
+        drawParticle(context, TextureStorage.firefly, hx, hy, width * 0.75f, core);
+        drawParticle(context, TextureStorage.firefly, hx, hy, width * 0.45f, core);
+    }
+
+    /** An additive ghostGlow sprite centred on (cx, cy) - soft light with a long falloff. */
+    private void drawGlow(DrawContext context, float cx, float cy, float size, Color col) {
+        Render2DEngine.renderGradientTexture(context, TextureStorage.ghostGlow, cx - size / 2f, cy - size / 2f, size, size,
+                0, 0, 128, 128, 128, 128, col, col, col, col, true);
     }
 
     private static Identifier textureFor(Mode mode) {
@@ -354,6 +446,8 @@ public class Particles extends Module {
             case Squares -> TextureStorage.squareOutline;
             // Cube is geometry, never a sprite - it never reaches the texture path.
             case Cube -> TextureStorage.squareOutline;
+            // Marker is drawn as a comet by renderComet, never as a single sprite.
+            case Marker -> TextureStorage.firefly;
             // All is resolved per particle at spawn, so it never reaches here; Off draws nothing.
             case Off, All -> TextureStorage.default_circle;
         };
@@ -367,6 +461,8 @@ public class Particles extends Module {
         Off, SnowFlake, Stars, Hearts, Dollars, Bloom, Squares,
         /** A real projected cube in the world, not a picture of a square. */
         Cube,
+        /** Glowing comets falling at a slant: a bright head and a tail that fades along the path. */
+        Marker,
         /**
          * Every shape at once.
          *

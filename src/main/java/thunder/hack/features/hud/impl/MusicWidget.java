@@ -117,6 +117,11 @@ public class MusicWidget extends HudElement {
     private final Setting<Boolean> blur = new Setting<>("Glass", true);
     /** The current line of the song, fetched from lrclib.net (free, synced where available). */
     private final Setting<Boolean> lyrics = new Setting<>("Lyrics", true);
+
+    /** The Lyrics switch - the main menu's music card follows it too. */
+    public boolean showsLyrics() {
+        return lyrics.getValue();
+    }
     private final Setting<ColorSetting> plateColor = new Setting<>("PlateColor", new ColorSetting(new Color(22, 22, 28, 235)));
     /**
      * How often the player state is refreshed.
@@ -157,6 +162,8 @@ public class MusicWidget extends HudElement {
     private static final float COMPACT_COVER = 18f;
     private static final float COMPACT_WIDTH = 184f;
     private static final float COMPACT_HEIGHT = 36f;
+    /** The extra row under a compact widget: elapsed time, the bar, the length. */
+    private static final float COMPACT_BAR = 11f;
 
     private static final float BIG_COVER = 44f;
     private static final float WIDE_WIDTH = 196f;
@@ -247,7 +254,7 @@ public class MusicWidget extends HudElement {
         float s = scale.getValue();
         boolean wide = layout.getValue() == Layout.Expanded;
         float width = wide ? WIDE_WIDTH : COMPACT_WIDTH;
-        float height = wide ? wideHeight(view) : COMPACT_HEIGHT;
+        float height = wide ? wideHeight(view) : COMPACT_HEIGHT + (showProgress.getValue() && view.available() ? COMPACT_BAR : 0f);
 
         boolean reverse = getPosX() > (mc.getWindow().getScaledWidth() / 2f);
         float left = reverse ? getPosX() - width : getPosX();
@@ -295,7 +302,7 @@ public class MusicWidget extends HudElement {
     /** {@code COVER | TITLE - ARTIST | heart | play}, on one line. */
     private void drawCompact(DrawContext context, View view, float left, float top, float width, float height) {
         Color accent = HudEditor.getColor(0);
-        float centre = top + height / 2f;
+        float centre = top + COMPACT_HEIGHT / 2f;   // the cover-title-buttons row; the time row sits under it
         float x = left + PAD;
 
         if (showCover.getValue()) {
@@ -314,6 +321,26 @@ public class MusicWidget extends HudElement {
             text(context, FontRenderers.sf_medium_mini,
                     trim(view.artist().toUpperCase(), textWidth), x, centre + 2f,
                     new Color(0x9A9AA5).getRGB());
+        }
+
+        // The time row under it, like Spotify's: time listened on the left of the bar, the song's length on the
+        // right ("--:--" while the length is unknown).
+        if (showProgress.getValue() && view.available()) {
+            var font = FontRenderers.sf_medium_mini;
+            String elapsed = SpotifyPlayer.stamp(view.position());
+            String total = view.duration() > 0 ? SpotifyPlayer.stamp(view.duration()) : "--:--";
+            float rowY = top + COMPACT_HEIGHT - 3f;
+            float l = left + PAD, r = left + width - PAD;
+            float elapsedW = font.getStringWidth(elapsed), totalW = font.getStringWidth(total);
+            Color stamp = new Color(0xA6A6B0);
+
+            text(context, font, elapsed, l, rowY, stamp.getRGB());
+            text(context, font, total, r - totalW, rowY, stamp.getRGB());
+
+            float barX = l + elapsedW + 6f, barW = Math.max(8f, (r - totalW - 6f) - barX), barY = rowY + 3f;
+            float fraction = view.duration() > 0 ? Math.clamp(view.position() / (float) view.duration(), 0f, 1f) : 0f;
+            Render2DEngine.drawRound(context, barX, barY, barW, 2f, 1f, new Color(255, 255, 255, 45));
+            Render2DEngine.drawRound(context, barX, barY, barW * fraction, 2f, 1f, accent);
         }
 
         if (!controls.getValue()) return;
@@ -735,12 +762,23 @@ public class MusicWidget extends HudElement {
                 ? thunder.hack.utility.CoverArt.of(fallbackArtist, fallbackTitle)
                 : null;
 
+        // The window title has no position and no length: the shared TitleClock supplies the position (and
+        // pauses with Spotify), lrclib the length - so the progress bar works without a login too.
+        boolean fromSpotifyWindow = thunder.hack.utility.spotify.TitleClock.current() != null;
+        long position = fallbackAvailable
+                ? (fromSpotifyWindow ? thunder.hack.utility.spotify.TitleClock.position() : System.currentTimeMillis() - fallbackStartedAt)
+                : 0L;
+        // length: the Windows media session's when it has one, else lrclib's
+        long sessionLength = fromSpotifyWindow ? thunder.hack.utility.spotify.TitleClock.duration() : 0L;
+        var found = fallbackAvailable ? thunder.hack.utility.spotify.Lyrics.get(fallbackTitle, fallbackArtist, sessionLength) : null;
+        long length = sessionLength > 0 ? sessionLength : found != null ? found.durationMs() : 0L;
+
         return new View(
                 fallbackAvailable, false,
                 fallbackTitle, fallbackArtist, "", "", "", "",
                 cover,
-                fallbackAvailable ? System.currentTimeMillis() - fallbackStartedAt : 0L,
-                0L, false,
+                length > 0 ? Math.min(position, length) : position,
+                length, length > 0,
                 // A window title does not say whether it is paused, and a title that is still there is
                 // very nearly always still playing - so the play icon follows "there is a track".
                 fallbackAvailable, false, false,

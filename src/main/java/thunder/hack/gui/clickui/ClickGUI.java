@@ -113,6 +113,10 @@ public class ClickGUI extends Screen {
 
     private float openAnim, settingsAnim;
     private float catAnim = 1f;
+    /** When the category last changed (or the GUI opened) - the module cards cascade in from here. */
+    private long catChangedAt;
+    private static final long CARD_STAGGER_MS = 30L;
+    private static final float CARD_IN_MS = 260f;
     private float pillY = -1f;
     private float searchFocusAnim;
     private boolean closing;
@@ -169,6 +173,12 @@ public class ClickGUI extends Screen {
 
     @Override
     protected void init() {
+        // init also runs on every window resize; only a GUI that is actually opening from nothing chimes
+        if (openAnim < 0.05f && !closing)
+        {
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.GUI_OPEN);
+            catChangedAt = System.currentTimeMillis(); // the cards cascade in on open too
+        }
     }
 
     @Override
@@ -204,13 +214,8 @@ public class ClickGUI extends Screen {
             Render2DEngine.drawRound(context, x, y, w, h, r, SOLID_PANEL);
         }
 
-        // crisp rim on all four sides - a sharp edge is what makes a blurred pane read as glass
-        float ins = Math.min(r, w / 2f);
-        float vIns = Math.min(r, h / 2f);
-        Render2DEngine.drawRect(context, x + ins, y, w - ins * 2f, 0.7f, new Color(255, 255, 255, blurred ? 70 : 30));
-        Render2DEngine.drawRect(context, x + ins, y + h - 0.7f, w - ins * 2f, 0.7f, new Color(255, 255, 255, 14));
-        Render2DEngine.drawRect(context, x, y + vIns, 0.7f, h - vIns * 2f, new Color(255, 255, 255, 22));
-        Render2DEngine.drawRect(context, x + w - 0.7f, y + vIns, 0.7f, h - vIns * 2f, new Color(255, 255, 255, 22));
+        // no rim: the hairline along the top (and the fainter sides and bottom) read as a stray line over the
+        // panel rather than as an edge - the blur and the veil carry the glass on their own
     }
 
     // ------------------------------------------------------------------ render
@@ -319,10 +324,16 @@ public class ClickGUI extends Screen {
         // sliding pill
         boolean searching = searchActive && !searchText.isEmpty();
         if (activeY >= 0f && !searching) {
-            pillY = pillY < 0f ? activeY : AnimationUtility.fast(pillY, activeY, 14f);
-            Render2DEngine.drawBlurredShadow(context, rowX, pillY, rowW, ROW_H, 8, Render2DEngine.injectAlpha(acc, 40));
-            Render2DEngine.drawRound(context, rowX, pillY, rowW, ROW_H, 6f, Render2DEngine.injectAlpha(acc, 52));
-            Render2DEngine.drawRound(context, rowX, pillY + 5f, 2.5f, ROW_H - 10f, 1.25f, acc);
+            // a soft glide rather than a near-instant snap, so the highlight visibly travels to the new category
+            pillY = pillY < 0f ? activeY : AnimationUtility.fast(pillY, activeY, 5f);
+            // while it travels it stretches towards where it is going, and settles back to its size on arrival
+            float gap = activeY - pillY;
+            float stretch = Math.min(12f, Math.abs(gap) * 0.35f);
+            float top = gap < 0f ? pillY - stretch : pillY;
+            float height = ROW_H + stretch;
+            Render2DEngine.drawBlurredShadow(context, rowX, top, rowW, height, 8, Render2DEngine.injectAlpha(acc, 40));
+            Render2DEngine.drawRound(context, rowX, top, rowW, height, 6f, Render2DEngine.injectAlpha(acc, 52));
+            Render2DEngine.drawRound(context, rowX, top + 5f, 2.5f, height - 10f, 1.25f, acc);
         }
 
         for (Row r : sidebarRows) drawSidebarRow(context, mouseX, mouseY, r, searching);
@@ -334,7 +345,11 @@ public class ClickGUI extends Screen {
 
         float hv = AnimationUtility.fast(rowHoverAnim.getOrDefault(r.label(), 0f), hovered ? 1f : 0f, 16f);
         rowHoverAnim.put(r.label(), hv);
-        float act = AnimationUtility.fast(rowHoverAnim.getOrDefault(r.label() + "#a", 0f), active ? 1f : 0f, 14f);
+        // A category row lights up by how close the sliding pill is, so the highlight visibly sweeps across
+        // every category between the old and the new one instead of fading out here and in over there.
+        float act = r.cat() != null && !searching && pillY >= 0f
+                ? Math.clamp(1f - Math.abs(pillY - r.y()) / ROW_H, 0f, 1f)
+                : AnimationUtility.fast(rowHoverAnim.getOrDefault(r.label() + "#a", 0f), active ? 1f : 0f, 14f);
         rowHoverAnim.put(r.label() + "#a", act);
 
         if (hv > 0.01f && act < 0.99f)
@@ -463,7 +478,7 @@ public class ClickGUI extends Screen {
 
         cards.clear();
         catAnim = AnimationUtility.fast(catAnim, 1f, 6f);
-        float slide = (1f - easeOutCubic(catAnim)) * 22f;
+        long sinceCat = System.currentTimeMillis() - catChangedAt;
         Render2DEngine.addWindow(context, cx, gridTop, cx + cw, gridBottom, 1.0);
         for (int i = 0; i < mods.size(); i++) {
             Module m = mods.get(i);
@@ -471,7 +486,16 @@ public class ClickGUI extends Screen {
             int row = i / cols;
             float cxp = gx + col * (cardW + gap);
             float cyp = gy + row * (CARD_H + gap) + scrollGrid;
-            drawCard(context, mouseX, mouseY, m, cxp, cyp + slide, cardW, CARD_H, slide, searching);
+            // cascade: each card starts a moment after the one before, rises into place and fades its text up
+            float t = easeOutCubic(Math.clamp((sinceCat - i * CARD_STAGGER_MS) / CARD_IN_MS, 0f, 1f));
+            if (t <= 0.01f) continue;
+            float slide = (1f - t) * 16f;
+            thunder.hack.gui.font.FontRenderer.globalAlpha = t;
+            try {
+                drawCard(context, mouseX, mouseY, m, cxp, cyp + slide, cardW, CARD_H, slide, searching);
+            } finally {
+                thunder.hack.gui.font.FontRenderer.globalAlpha = 1f;
+            }
         }
         Render2DEngine.popWindow();
 
@@ -684,8 +708,14 @@ public class ClickGUI extends Screen {
 
         Render2DEngine.addWindow(context, spX, top, spX + spW, spY + spH - 4f, 1.0);
         float offY = scrollSettings;
+        long now = System.currentTimeMillis();
+        int arriving = 0;
         for (AbstractElement el : els) {
-            if (!el.isVisible()) continue;
+            if (!el.isVisible()) {
+                // hidden (a closed group, another module) - it reveals again from scratch next time it shows
+                revealedAt.remove(el);
+                continue;
+            }
             el.setOffsetY(offY);
             el.setX(ex);
             el.setY(top);
@@ -697,9 +727,29 @@ public class ClickGUI extends Screen {
                 combo.setWHeight(13);
                 el.setHeight(combo.isOpen() ? 13 + (combo.getSetting().getModes().length * 12) : 13);
             }
+            // Text reveal: rows that just appeared cascade in, each a little after the one above, sliding from
+            // the left while their text fades up.
+            Long shown = revealedAt.get(el);
+            if (shown == null) {
+                shown = now + arriving * REVEAL_STAGGER_MS;
+                revealedAt.put(el, shown);
+                arriving++;
+            }
+            float reveal = easeOutCubic(Math.clamp((now - shown) / REVEAL_MS, 0f, 1f));
+
             float elY = top + offY;
-            if (elY + el.getHeight() >= top && elY <= spY + spH - 4f)
-                el.render(context, mouseX, mouseY, delta);
+            if (elY + el.getHeight() >= top && elY <= spY + spH - 4f && reveal > 0.01f) {
+                var m = context.getMatrices();
+                m.pushMatrix();
+                m.translate(-(1f - reveal) * 14f, 0f);
+                thunder.hack.gui.font.FontRenderer.globalAlpha = reveal;
+                try {
+                    el.render(context, mouseX, mouseY, delta);
+                } finally {
+                    thunder.hack.gui.font.FontRenderer.globalAlpha = 1f;
+                    m.popMatrix();
+                }
+            }
             offY += el.getHeight();
         }
         Render2DEngine.popWindow();
@@ -728,7 +778,18 @@ public class ClickGUI extends Screen {
         return elementCache.computeIfAbsent(module, ElementFactory::build);
     }
 
+    /** When each settings row started (or will start) revealing its text - see renderSettings. */
+    private final java.util.Map<AbstractElement, Long> revealedAt = new java.util.HashMap<>();
+    private static final float REVEAL_MS = 240f;
+    private static final long REVEAL_STAGGER_MS = 28L;
+
     private void openSettings(Module module) {
+        if (settingsModule == null)
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.SLIDE_IN);
+        else if (settingsModule != module)
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP);
+        // every row of the newly opened module reveals again
+        revealedAt.clear();
         settingsModule = module;
         scrollSettings = scrollSettingsTarget = 0f;
     }
@@ -739,6 +800,8 @@ public class ClickGUI extends Screen {
     }
 
     private void closeSettings() {
+        if (settingsModule != null)
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.SLIDE_OUT);
         settingsModule = null;
     }
 
@@ -819,8 +882,14 @@ public class ClickGUI extends Screen {
 
         for (Row r : sidebarRows) {
             if (!Render2DEngine.isHovered(mx, my, r.x(), r.y(), r.w(), r.h())) continue;
+            // a light tick on every sidebar click: switching category, Configs, Friends, Edit HUD
+            boolean changes = r.cat() == null || r.cat() != selectedCategory;
+            if (changes) thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP, 0.5f);
             if (r.cat() != null) {
-                if (r.cat() != selectedCategory) catAnim = 0f;
+                if (r.cat() != selectedCategory) {
+                    catAnim = 0f;
+                    catChangedAt = System.currentTimeMillis();
+                }
                 selectedCategory = r.cat();
                 scrollGrid = scrollGridTarget = 0f;
                 searchActive = false;
@@ -977,6 +1046,7 @@ public class ClickGUI extends Screen {
         // Play the shrink/settle-out animation first, then actually close once it has finished.
         if (!closing) {
             closing = true;
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.GUI_CLOSE);
             return;
         }
         reallyClose();

@@ -57,6 +57,16 @@ public class InventoryHud extends HudElement {
     private final Setting<Boolean> durability = new Setting<>("Durability", true);
     private final Setting<Boolean> selectedSlot = new Setting<>("SelectedSlot", true);
     private final Setting<Boolean> tooltips = new Setting<>("Tooltip", true);
+    /** A title row over the slots, like the Potions / KeyBinds glass panels: name on the left, an icon on the right. */
+    private final Setting<Boolean> showHeader = new Setting<>("Header", true);
+    private final Setting<String> title = new Setting<>("Title", "Inventory", v -> showHeader.getValue());
+
+    private static final float HEADER_H = 16f;
+    private static final float HEADER_ICON = 9f;
+
+    private float header() {
+        return showHeader.getValue() ? HEADER_H : 0f;
+    }
 
     public InventoryHud() {
         // domyslny rozmiar to 3 rzędy kieszeni x 9 kolumn, przy domyslnych SlotSize=18 i Gap=1
@@ -75,7 +85,7 @@ public class InventoryHud extends HudElement {
 
         float x = getPosX(), y = getPosY();
         float width = COLUMNS * step - gap.getValue() + PADDING * 2f;
-        float height = rows.size() * step - gap.getValue() + PADDING * 2f;
+        float height = rows.size() * step - gap.getValue() + PADDING * 2f + header();
         setBounds(x, y, width, height);
 
         float panelRadius = Math.min(HudEditor.hudRound.getValue(), 6f);
@@ -86,6 +96,15 @@ public class InventoryHud extends HudElement {
         Render2DEngine.drawRoundedBlur(context, x, y, width, height, panelRadius, new Color(255, 255, 255, 14));
         Render2DEngine.drawRound(context, x, y, width, height, panelRadius, FRAME);
         Render2DEngine.drawRound(context, x + 1f, y + 1f, width - 2f, height - 2f, Math.max(1f, panelRadius - 1f), BODY);
+
+        if (showHeader.getValue()) {
+            FontRenderers.sf_medium.drawString(context, title.getValue(), x + PADDING + 3f, y + 6f,
+                    new Color(255, 255, 255, 235).getRGB());
+            int s = Math.round(HEADER_ICON);
+            context.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, thunder.hack.utility.render.TextureStorage.backpackIcon,
+                    Math.round(x + width - PADDING - 3f - HEADER_ICON), Math.round(y + (HEADER_H - HEADER_ICON) / 2f + 1f),
+                    0, 0, s, s, s, s);
+        }
 
         int hotbarRow = hotbarRow();
         int selected = selectedSlot.getValue() ? mc.player.getInventory().selectedSlot : -1;
@@ -99,7 +118,7 @@ public class InventoryHud extends HudElement {
                 // a slot can come back null (e.g. the HUD editor preview before the inventory exists) - treat it as empty
                 ItemStack stack = column < stacks.length && stacks[column] != null ? stacks[column] : ItemStack.EMPTY;
                 float sx = x + PADDING + column * step;
-                float sy = y + PADDING + row * step;
+                float sy = y + header() + PADDING + row * step;
                 boolean isSelected = column == selected && row == hotbarRow;
                 boolean isHovered = column == hoverColumn && row == hoverRow;
 
@@ -154,7 +173,7 @@ public class InventoryHud extends HudElement {
     private int hoveredCell(float step, int columns, int rowCount, boolean vertical) {
         if (!isHovering()) return -1;
 
-        float origin = (vertical ? getPosY() : getPosX()) + PADDING;
+        float origin = (vertical ? getPosY() + header() : getPosX()) + PADDING;
         float along = (vertical ? normaliseY() : normaliseX()) - origin;
         int cell = (int) Math.floor(along / step);
         int limit = vertical ? rowCount : columns;

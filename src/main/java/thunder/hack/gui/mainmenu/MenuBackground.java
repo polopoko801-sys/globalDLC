@@ -182,34 +182,54 @@ public final class MenuBackground {
 
         // Selected file deleted behind our back (or a choice from an older build) -> the first wallpaper.
         if (selected != null && !FILES.contains(selected))
-            select(FILES.isEmpty() ? null : FILES.getFirst());
+            select(FILES.isEmpty() ? null : FILES.contains("sakura-breeze.gif") ? "sakura-breeze.gif" : FILES.getFirst());
     }
 
     private static boolean bundledChecked;
 
+    /** Wallpapers older builds unpacked and this one no longer ships - removed from the folder once. */
+    private static final Set<String> RETIRED = Set.of(
+            "bonfire-night.gif", "city-alley-night.gif", "fantasy-forest-tree.gif", "flowers-sunset.gif",
+            "forest-scene.gif", "green-fields-wind.gif", "lake-house-pixel.gif", "moon-mountains-pixel.gif",
+            "purple-landscape-pixel.gif", "rain-city-night-blue.gif", "rain-garden.gif", "rain-river.gif",
+            "rain-samurai.gif", "rain-umbrella-walk.gif", "snowy-cottage-moon.gif", "train-sunrise-blossom.gif",
+            "winter-snowfall.gif");
+
+    /** The bundled names already unpacked once, so one you deleted yourself is not put back. */
+    private static final File INSTALLED = new File(FOLDER, "bundled.txt");
+
     /**
-     * The animated wallpapers ship INSIDE the jar ({@code assets/gombal/backgrounds}), so every copy of the
-     * client has them - they used to exist only in the dev run folder, which left a real install with an empty
-     * gallery. Unpacked once, only into an empty folder: anything you added or removed yourself is left alone.
+     * The wallpapers ship INSIDE the jar ({@code assets/gombal/backgrounds}), so every copy of the client has
+     * them. Each bundled file is unpacked once (tracked in {@code bundled.txt}), and the ones older builds
+     * shipped are cleared out - anything else you added yourself is left alone.
      */
     private static void installBundled() {
-        File[] existing = FOLDER.listFiles((dir, name) -> {
-            String lower = name.toLowerCase(Locale.ROOT);
-            return Arrays.stream(EXTENSIONS).anyMatch(lower::endsWith);
-        });
-        if (existing != null && existing.length > 0) return;
         try (var idx = MenuBackground.class.getResourceAsStream("/assets/gombal/backgrounds/index.txt")) {
             if (idx == null) return;
+
+            Set<String> done = new java.util.HashSet<>();
+            if (INSTALLED.isFile())
+                for (String line : Files.readAllLines(INSTALLED.toPath(), StandardCharsets.UTF_8))
+                    if (!line.isBlank()) done.add(line.trim());
+
+            if (!done.contains("<retired-v1>")) {
+                for (String old : RETIRED) new File(FOLDER, old).delete();
+                done.add("<retired-v1>");
+            }
+
             String first = null;
             for (String name : new String(idx.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
                 name = name.trim();
                 if (name.isEmpty() || name.contains("/") || name.contains("\\")) continue;
+                if (first == null) first = name;
+                if (!done.add(name) || new File(FOLDER, name).isFile()) continue;
                 try (var in = MenuBackground.class.getResourceAsStream("/assets/gombal/backgrounds/" + name)) {
                     if (in == null) continue;
                     Files.copy(in, new File(FOLDER, name).toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                    if (first == null) first = name;
                 }
             }
+            Files.write(INSTALLED.toPath(), done, StandardCharsets.UTF_8);
+
             // an empty selection would leave the plain panorama up - start on a wallpaper instead
             String pick = new File(FOLDER, "sakura-breeze.gif").isFile() ? "sakura-breeze.gif" : first;
             boolean empty = !SELECTION.isFile() || Files.readString(SELECTION.toPath(), StandardCharsets.UTF_8).isBlank();
@@ -264,6 +284,9 @@ public final class MenuBackground {
         if (tagged != null) return tagged;
 
         String lower = fileName.toLowerCase(Locale.ROOT);
+        // the bundled desktop-style sets
+        if (lower.startsWith("macos-") || lower.startsWith("plasma-") || lower.startsWith("windows-")) return Category.Abstract;
+        if (lower.startsWith("sakura")) return Category.Nature;
         for (Category c : Category.values()) {
             if (c == Category.Other) continue;
             if (lower.startsWith(c.name().toLowerCase(Locale.ROOT))) return c;

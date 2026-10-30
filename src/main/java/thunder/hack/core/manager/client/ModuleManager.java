@@ -74,7 +74,6 @@ public class ModuleManager implements IManager {
     public static MouseElytraFix mouseElytraFix = new MouseElytraFix();
     public static TotemAnimation totemAnimation = new TotemAnimation();
     public static PortalGodMode portalGodMode = new PortalGodMode();
-    public static GombalCape gombalCape = new GombalCape();
     public static Notifications notifications = new Notifications();
     public static NoEntityTrace noEntityTrace = new NoEntityTrace();
     public static MessageAppend messageAppend = new MessageAppend();
@@ -167,6 +166,7 @@ public class ModuleManager implements IManager {
     public static ColorGrading colorGrading = new ColorGrading();
     public static SpeedMine speedMine = new SpeedMine();
     public static PotionHud potionHud = new PotionHud();
+    public static DynamicIsland dynamicIsland = new DynamicIsland();
     public static PearlBait pearlBait = new PearlBait();
     public static PacketFly packetFly = new PacketFly();
     public static MultiTask multitask = new MultiTask();
@@ -220,6 +220,7 @@ public class ModuleManager implements IManager {
     public static AutoEat autoEat = new AutoEat();
     public static AntiAFK antiAFK = new AntiAFK();
     public static SoundFX soundFX = new SoundFX();
+    public static ClientSound clientSound = new ClientSound();
     public static Tracker tracker = new Tracker();
     public static TpsSync tpsSync = new TpsSync();
     public static Spammer spammer = new Spammer();
@@ -302,6 +303,7 @@ public class ModuleManager implements IManager {
     public static BacktrackTest backtrackTest = new BacktrackTest();
     public static ChunkAnalyzer chunkAnalyzer = new ChunkAnalyzer();
     public static MusicWidget musicWidget = new MusicWidget();
+    public static LyricsText lyricsText = new LyricsText();
     public static VoidRings voidRings = new VoidRings();
     public static GroundSigil groundSigil = new GroundSigil();
     public static CustomSky customSky = new CustomSky();

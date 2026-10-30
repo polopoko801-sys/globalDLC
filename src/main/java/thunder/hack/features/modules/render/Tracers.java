@@ -59,9 +59,9 @@ public class Tracers extends Module {
             if (player == mc.player || !player.isAlive()) continue;
             if (mc.player.distanceTo(player) > range.getValue()) continue;
 
-            double x = MathHelper.lerp(td, player.lastX, player.getX());
-            double y = MathHelper.lerp(td, player.lastY, player.getY());
-            double z = MathHelper.lerp(td, player.lastZ, player.getZ());
+            double x = MathHelper.lerp(td, player.lastRenderX, player.getX());
+            double y = MathHelper.lerp(td, player.lastRenderY, player.getY());
+            double z = MathHelper.lerp(td, player.lastRenderZ, player.getZ());
 
             double aimY = switch (aim.getValue()) {
                 case Feet -> 0.0;

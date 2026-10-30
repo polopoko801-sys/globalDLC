@@ -432,8 +432,18 @@ public class GeometryParticles extends Module {
                     Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(wide, wide), scale * 0.22, tw);
                     Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(mid, mid), scale * 0.10, tw);
                 }
-                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(coreC, coreC), scale * 0.03, tw);
+                // a floor on the core's width: at 3% of a small cube it was a fraction of a pixel and shimmered
+                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(coreC, coreC),
+                        Math.max(scale * 0.035, 0.014), tw);
             }
+
+            // Joints: a small soft glow on every vertex. Beams end square, so where two edges met there was a
+            // notch and a stair-step; a dot of light over each corner closes it and makes the corners shine.
+            float joint = Math.max(scale * 0.16f, 0.05f);
+            Color jointC = Render2DEngine.injectAlpha(coreC, Math.round(color.getAlpha() * 0.85f));
+            for (Vec3d v : world)
+                Render3DEngine.drawOrientedSprite3D(TextureStorage.ghostGlow, v.add(0, joint * 0.5, 0),
+                        -CloudanRenderCore.cameraYaw(), 0f, 0f, -joint / 2, joint, joint, jointC, false, throughWalls.getValue());
         }
     }
 

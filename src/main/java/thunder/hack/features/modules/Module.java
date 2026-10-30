@@ -137,6 +137,8 @@ public abstract class Module {
         if (!ignoreSoundList.contains(getDisplayName())) {
             NOTIFICATION.publicity(getDisplayName(), isRu() ? "Модуль включен!" : "Was Enabled!", 2, Notification.Type.ENABLED);
             Managers.SOUND.playEnable();
+            if (thunder.hack.core.manager.client.ModuleManager.dynamicIsland != null)
+                thunder.hack.core.manager.client.ModuleManager.dynamicIsland.onToggle(this, true);
         }
     }
 
@@ -167,6 +169,8 @@ public abstract class Module {
         if (!ignoreSoundList.contains(getDisplayName())) {
             NOTIFICATION.publicity(getDisplayName(), isRu() ? "Модуль выключен!" : "Was Disabled!", 2, Notification.Type.DISABLED);
             Managers.SOUND.playDisable();
+            if (thunder.hack.core.manager.client.ModuleManager.dynamicIsland != null)
+                thunder.hack.core.manager.client.ModuleManager.dynamicIsland.onToggle(this, false);
         }
     }
 

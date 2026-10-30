@@ -1109,15 +1109,35 @@ public class Render3DEngine {
 
     // Kalry не пасть
     // anti yg protection
+    /** The ghosts' eased lean: the target it belongs to and its smoothed horizontal velocity. */
+    private static int ghostTiltId = -1;
+    private static double ghostTiltX, ghostTiltZ;
+
+    /** How the ThunderHack V2 ghosts circle the target. */
+    public enum GhostStyle {
+        /** The classic: three trails round the body at chest height. */
+        Orbit,
+        /** Each trail on its own tilted, slowly turning orbit - an atom seen from above. */
+        Diagonal,
+        /** A tight ring above the head only, like a halo. */
+        Halo
+    }
+
     public static void renderGhosts(int espLength, int factor, float shaking, float amplitude, Entity target) {
+        renderGhosts(espLength, factor, shaking, amplitude, target, GhostStyle.Orbit);
+    }
+
+    public static void renderGhosts(int espLength, int factor, float shaking, float amplitude, Entity target, GhostStyle style) {
         Camera camera = mc.gameRenderer.getCamera();
 
-        double tPosX = Render2DEngine.interpolate(target.lastX, target.getX(), Render3DEngine.getTickDelta()) - camera.getCameraPos().x;
-        double tPosY = Render2DEngine.interpolate(target.lastY, target.getY(), Render3DEngine.getTickDelta()) - camera.getCameraPos().y;
-        double tPosZ = Render2DEngine.interpolate(target.lastZ, target.getZ(), Render3DEngine.getTickDelta()) - camera.getCameraPos().z;
+        double tPosX = Render2DEngine.interpolate(target.lastRenderX, target.getX(), Render3DEngine.getTickDelta()) - camera.getCameraPos().x;
+        double tPosY = Render2DEngine.interpolate(target.lastRenderY, target.getY(), Render3DEngine.getTickDelta()) - camera.getCameraPos().y;
+        double tPosZ = Render2DEngine.interpolate(target.lastRenderZ, target.getZ(), Render3DEngine.getTickDelta()) - camera.getCameraPos().z;
         float iAge = (float) Render2DEngine.interpolate(target.age - 1, target.age, Render3DEngine.getTickDelta());
 
-        RenderLayer layer = Render3DUtil.texturedLayerNoDepth(TextureStorage.fireflyAlpha);
+        // ghostGlow, not fireflyAlpha: firefly_a is a hard-edged disc, so the trail read as a string of separate
+        // circles. The soft halo lets neighbouring sprites melt into one smooth glowing streak, as in ThunderHack.
+        RenderLayer layer = Render3DUtil.texturedLayerNoDepth(TextureStorage.ghostGlow);
         VertexConsumer buffer = Render3DUtil.buffer(layer);
 
         // One MatrixStack for the whole effect (push/pop per quad) instead of a fresh one — plus the four
@@ -1132,21 +1152,57 @@ public class Render3DEngine {
         var yawRotInv = RotationAxis.POSITIVE_Y.rotationDegrees(-camYaw);
         float width = target.getWidth();
 
+        // Lean with the motion: the orbit tips over in the direction the target travels - a little when it runs,
+        // a lot on an elytra - so the souls trail like they are being dragged along. Eased so it never snaps.
+        double velX = target.getX() - target.lastX, velZ = target.getZ() - target.lastZ;
+        if (target.getId() != ghostTiltId) {
+            ghostTiltId = target.getId();
+            ghostTiltX = ghostTiltZ = 0;
+        }
+        ghostTiltX += (velX - ghostTiltX) * 0.12;
+        ghostTiltZ += (velZ - ghostTiltZ) * 0.12;
+        double speed = Math.sqrt(ghostTiltX * ghostTiltX + ghostTiltZ * ghostTiltZ);
+        // rise per block of horizontal offset: 0 standing, ~0.35 sprinting, capped at 0.9 flying
+        double lean = Math.min(0.9, speed * 1.2);
+        double dirX = speed > 1e-4 ? ghostTiltX / speed : 0, dirZ = speed > 1e-4 ? ghostTiltZ / speed : 0;
+
         for (int j = 0; j < 3; j++) {
             for (int i = 0; i <= espLength; i++) {
                 double radians = Math.toRadians((((float) i / 1.5f + iAge) * factor + (j * 120)) % (factor * 360));
                 double sinQuad = Math.sin(Math.toRadians(iAge * 2.5f + i * (j + 1)) * amplitude) / shaking;
 
+                double ox = Math.cos(radians) * width, oz = Math.sin(radians) * width;
+                double baseY = 1 + sinQuad;
+                switch (style) {
+                    case Diagonal -> {
+                        // each trail's orbit tipped ~35 degrees about its own horizontal axis, the three axes
+                        // 120 degrees apart and turning slowly - crossing rings, like an atom
+                        double axis = Math.toRadians(iAge * 1.2 + j * 120);
+                        baseY = 1 + sinQuad * 0.35 + (ox * Math.cos(axis) + oz * Math.sin(axis)) * 0.7;
+                    }
+                    case Halo -> {
+                        // a tight ring just above the head, barely bobbing
+                        ox *= 0.6;
+                        oz *= 0.6;
+                        baseY = target.getHeight() + 0.25 + sinQuad * 0.12;
+                    }
+                    default -> {
+                    }
+                }
+                // the leading side of the orbit dips, the trailing side lifts
+                double tilt = -(ox * dirX + oz * dirZ) * lean;
+
                 float offset = ((float) i / espLength);
                 matrices.push();
                 matrices.multiply(pitchRot);
                 matrices.multiply(yawRotBack);
-                matrices.translate(tPosX + Math.cos(radians) * width, (tPosY + 1 + sinQuad), tPosZ + Math.sin(radians) * width);
+                matrices.translate(tPosX + ox, (tPosY + baseY + tilt), tPosZ + oz);
                 matrices.multiply(yawRotInv);
                 matrices.multiply(pitchRot);
                 Matrix4f matrix = matrices.peek().getPositionMatrix();
                 int color = Render2DEngine.applyOpacity(HudEditor.getColor((int) (180 * offset)), offset).getRGB();
-                float scale = Math.max(0.24f * (offset), 0.2f);
+                // larger than the old disc: most of ghostGlow is soft halo, and the halos must overlap
+                float scale = Math.max(0.24f * (offset), 0.2f) * 1.7f;
                 Render3DUtil.vertexTex(buffer, matrix, -scale, scale, 0, 0f, 1f, color);
                 Render3DUtil.vertexTex(buffer, matrix, scale, scale, 0, 1f, 1f, color);
                 Render3DUtil.vertexTex(buffer, matrix, scale, -scale, 0, 1f, 0f, color);

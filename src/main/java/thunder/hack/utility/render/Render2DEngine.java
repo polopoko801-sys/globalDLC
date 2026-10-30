@@ -403,7 +403,18 @@ public class Render2DEngine {
      * centre, like looking through a drop of glass (0.9 = 10% magnified). 1 = flat glass.
      */
     public static boolean drawBackdropBlur(DrawContext context, float x, float y, float width, float height, float radius, float blurPixels, float zoom) {
+        return drawBackdropBlur(context, x, y, width, height, radius, blurPixels, zoom, 1f);
+    }
+
+    /**
+     * {@link #drawBackdropBlur} that can be faded: every layer's alpha is scaled by {@code opacity}, so at 1 it
+     * is the exact blur and below that the sharp background shows through - close enough to a true mix for a
+     * panel animating in or out.
+     */
+    public static boolean drawBackdropBlur(DrawContext context, float x, float y, float width, float height, float radius, float blurPixels, float zoom, float opacity) {
         if (!ScreenCapture.available() || width <= 0f || height <= 0f) return false;
+        opacity = MathHelper.clamp(opacity, 0f, 1f);
+        if (opacity <= 0.004f) return true;
 
         float sw = context.getScaledWindowWidth();
         float sh = context.getScaledWindowHeight();
@@ -420,7 +431,7 @@ public class Render2DEngine {
         // way towards its own colour, so after N layers the panel holds the exact mean of every tap. No
         // black base is needed — the first tap is already opaque — so nothing can flash as a black box.
         for (int k = 0; k < taps.size(); k++) {
-            int alpha = Math.max(1, Math.round(255f / (k + 1)));
+            int alpha = Math.max(1, Math.round(255f * opacity / (k + 1)));
             backdropPass(context, GuiRender.GUI_TEXTURED_TRANSLUCENT, pose, pts, taps.get(k)[0], taps.get(k)[1],
                     sw, sh, new Color(255, 255, 255, alpha).getRGB(), zoom, centre);
         }
@@ -996,16 +1007,65 @@ public class Render2DEngine {
         hudBaseFill(context, x, y, width, height, radius, HudEditor.alpha.getValue());
     }
 
+    /**
+     * A top-lit sheen that follows the pane's shape: a few stacked translucent copies of the pane, each
+     * shorter than the last, so it fades downwards like a gradient but keeps the rounded (or circular)
+     * outline. A rectangular gradient here poked out past the curve as a visible box.
+     *
+     * @param alpha the brightest the sheen gets at the top edge, 0..255
+     */
+    public static void drawRoundedSheen(DrawContext context, float x, float y, float width, float height, float radius, float alpha) {
+        if (alpha < 1f || width <= 2f || height <= 2f) return;
+        // Circles get no sheen. Every way of shaping one onto a disc showed: a rectangle stuck out of the top,
+        // stacked discs banded, and a 4-corner gradient fill drew a dark "V" wedge (the fan interpolates from
+        // the corners). Even milky glass reads fine on a round button.
+        if (radius >= Math.min(width, height) / 2f - 0.5f) return;
+        // Rounded panes: a plain vertical gradient over the top half, kept to the straight middle band between
+        // the corner curves - inside the outline by construction, so no box, no bands, no wedge.
+        float inset = Math.max(1f, radius);
+        if (width - inset * 2f <= 1f) return;
+        verticalGradient(context, x + inset, y + 1f, x + width - inset, y + height * 0.5f,
+                injectAlpha(Color.WHITE, Math.min(255, Math.round(alpha))), injectAlpha(Color.WHITE, 0));
+    }
+
+    /**
+     * A soft shadow that keeps the shape's rounding: stacked, slightly larger rounded copies at falling alpha.
+     *
+     * @param spread how far the shadow reaches past the shape
+     * @param alpha  darkness right at the edge, 0..255
+     */
+    public static void drawRoundedShadow(DrawContext context, float x, float y, float width, float height, float radius, float spread, int alpha) {
+        if (alpha <= 0 || width <= 0f || height <= 0f) return;
+        int rings = 5;
+        for (int i = rings; i >= 1; i--) {
+            float g = spread * i / rings;
+            int a = Math.round(alpha * 0.22f * (1f - i / (rings + 1f)));
+            if (a <= 0) continue;
+            drawRound(context, x - g, y - g + 1.5f, width + g * 2f, height + g * 2f, radius + g, new Color(0, 0, 0, a));
+        }
+    }
+
     public static void drawRoundedBlur(DrawContext context, float x, float y, float width, float height, float radius, Color c1) {
         drawRoundedBlur(context, x, y, width, height, radius, c1, HudEditor.blurStrength.getValue(), HudEditor.blurOpacity.getValue());
     }
 
     public static void drawRoundedBlur(DrawContext context, float x, float y, float width, float height, float radius, Color c1, float blurStrenth, float blurOpacity) {
+        drawRoundedBlur(context, x, y, width, height, radius, c1, blurStrenth, blurOpacity, 1f);
+    }
+
+    /** The liquid glass with the default HUD strength, faded as a whole by {@code fade} (0..1) - for panels animating in or out. */
+    public static void drawRoundedBlurFaded(DrawContext context, float x, float y, float width, float height, float radius, Color c1, float fade) {
+        drawRoundedBlur(context, x, y, width, height, radius, c1, HudEditor.blurStrength.getValue(), HudEditor.blurOpacity.getValue(), fade);
+    }
+
+    /** @param fade the whole pane's opacity, 0..1 - the backdrop blur fades with it, not just the tint */
+    public static void drawRoundedBlur(DrawContext context, float x, float y, float width, float height, float radius, Color c1, float blurStrenth, float blurOpacity, float fade) {
         // INTERIM: BLUR_PROGRAM is still pending migration to RenderPipeline, so there is no way to sample
         // and blur what is actually behind the panel. The glass look is built out of geometry instead: soft
         // drop shadow, translucent tinted body with a top-down sheen, a bright top hairline and faint side
         // edges — which is what reads as frosted glass on a HUD even without a real backdrop blur.
-        float op = MathHelper.clamp(blurOpacity, 0f, 1f);
+        fade = MathHelper.clamp(fade, 0f, 1f);
+        float op = MathHelper.clamp(blurOpacity, 0f, 1f) * fade;
         if (op <= 0.01f || width <= 0f || height <= 0f) return;
 
         // BlurStrength drives how far the panel lifts off the background, instead of doing nothing at all.
@@ -1013,7 +1073,7 @@ public class Render2DEngine {
         drawBlurredShadow(context, x, y, width, height, shadowRadius, injectAlpha(Color.BLACK, (int) (165 * op)));
 
         // ---- iOS-style glass: real blurred backdrop + one flat, uniform tint on top ----
-        if (drawBackdropBlur(context, x, y, width, height, radius, blurStrenth / 2.5f)) {
+        if (drawBackdropBlur(context, x, y, width, height, radius, blurStrenth / 2.5f, 1f, fade)) {
             // Vibrancy: lift the blurred image a touch so the glass looks bright and alive, not grey.
             drawBackdropBoost(context, x, y, width, height, radius, 0.07f * op);
 
@@ -1211,6 +1271,14 @@ public class Render2DEngine {
                         bx + px * o0, by + py * o0,
                         bx + px * o1, by + py * o1,
                         ax + px * o1, ay + py * o1,
+                        s, e, e, s);
+                // and the opposite winding: the GUI pipeline culls back faces, and which way round these quads
+                // wind depends on the line's direction - so one way of the two simply vanished (Tracers)
+                GuiRender.quad(vc, pose,
+                        ax + px * o1, ay + py * o1,
+                        bx + px * o1, by + py * o1,
+                        bx + px * o0, by + py * o0,
+                        ax + px * o0, ay + py * o0,
                         s, e, e, s);
             }
         });

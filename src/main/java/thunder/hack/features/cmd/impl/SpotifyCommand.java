@@ -34,9 +34,19 @@ public class SpotifyCommand extends Command {
 
         builder.then(literal("login").executes(context -> {
             if (SpotifyAuth.clientId().isEmpty()) {
-                sendMessage("Najpierw client id: .spotify clientid <id>");
-                sendMessage("Zaloz darmowa apke na developer.spotify.com i dodaj Redirect URI:");
-                sendMessage("§7" + SpotifyAuth.REDIRECT);
+                // chat links are not clickable here, so do the clicking for them: open the dashboard and put the
+                // redirect URI on the clipboard, ready to paste
+                try {
+                    net.minecraft.util.Util.getOperatingSystem().open(java.net.URI.create("https://developer.spotify.com/dashboard"));
+                } catch (Throwable ignored) {
+                }
+                try {
+                    mc.keyboard.setClipboard(SpotifyAuth.REDIRECT);
+                } catch (Throwable ignored) {
+                }
+                sendMessage("Otworzylem developer.spotify.com - zaloz tam darmowa apke (Create app).");
+                sendMessage("Redirect URI jest juz w schowku - wklej go (Ctrl+V) w polu Redirect URIs.");
+                sendMessage("Potem skopiuj Client ID i wpisz: @spotify clientid <id>, a na koniec znowu @spotify login");
                 return SINGLE_SUCCESS;
             }
 

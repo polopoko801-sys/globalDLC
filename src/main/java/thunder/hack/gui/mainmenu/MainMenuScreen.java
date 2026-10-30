@@ -110,6 +110,8 @@ public class MainMenuScreen extends Screen {
         float w = width, h = height;
 
         MenuBackdrop.render(context, this, w, h, mouseX, mouseY, 0.22f, delta);
+        // the glass panels blur exactly this: the wallpaper, before anything is drawn over it
+        MenuGlass.capture();
 
         // Advanced exactly once per frame; every later read uses peek().
         float progress = open.direction(menuOpen).advance();

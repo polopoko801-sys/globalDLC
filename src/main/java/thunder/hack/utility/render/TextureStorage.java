@@ -144,6 +144,8 @@ public final class TextureStorage {
     public static final Identifier thTeam = Identifier.of("gombal", "textures/gui/elements/thteam.png");
     public static final Identifier donation = Identifier.of("gombal", "textures/gui/elements/donationalerts.png");
     public static final Identifier chestIcon = Identifier.of("gombal", "textures/hud/icons/chest.png");
+    /** Outline backpack, 64x64 - the InventoryHud header. */
+    public static final Identifier backpackIcon = Identifier.of("gombal", "textures/hud/icons/backpack.png");
     public static final Identifier brokenShield = Identifier.of("gombal", "textures/hud/elements/broken_shield.png");
     public static final Identifier miniLogo = Identifier.of("gombal", "textures/hud/icons/mini_logo.png");
     public static final Identifier playerIcon = Identifier.of("gombal", "textures/gui/headers/player.png");

@@ -311,8 +311,16 @@ public class FontRenderer implements Closeable {
         drawString(context, s, x, y, r, g, b, a, gradient, offset, 1f);
     }
 
+    /**
+     * Multiplies the alpha of every string drawn while it is below 1. Set around a block of UI that is fading
+     * in (the ClickGUI's settings rows reveal their text this way) and put back to 1 straight after.
+     */
+    public static float globalAlpha = 1f;
+
     private void drawString(DrawContext context, String s, float x, float y, float r, float g, float b, float a,
                             boolean gradient, int offset, float supersample) {
+        a *= globalAlpha;
+        if (a <= 0.004f) return;
         if (prebakeGlyphsFuture != null && !prebakeGlyphsFuture.isDone()) {
             try {
                 prebakeGlyphsFuture.get();

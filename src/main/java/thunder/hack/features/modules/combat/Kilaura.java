@@ -111,7 +111,9 @@ public class Kilaura extends Module {
     public final Setting<Float> oldPvpSystemDelayMax = new Setting<>("Max APS", 13.0f, 1.0f, 20.0f, v -> clickMode.getValue() == ClickMode.V1_8).addToGroup(gAttack);
     public final Setting<Boolean> tpsSync = new Setting<>("TPS Sync", false).addToGroup(gAttack);
     public final Setting<Float> hitChance = new Setting<>("HitChance", 100.0f, 1.0f, 100.0f).addToGroup(gAttack);
-    public final Setting<Boolean> autoWeapon = new Setting<>("Auto Weapon", false).addToGroup(gAttack);
+    /** Master switch: Kilaura never changes your hotbar slot (blocks Auto Weapon and the Shield Breaker axe swap). */
+    public final Setting<Boolean> noSlotSwitch = new Setting<>("No Slot Switch", true).addToGroup(gAttack);
+    public final Setting<Boolean> autoWeapon = new Setting<>("Auto Weapon", false, v -> !noSlotSwitch.getValue()).addToGroup(gAttack);
     public final Setting<Boolean> weaponOnly = new Setting<>("Weapon Only", false).addToGroup(gAttack);
     public final Setting<Boolean> usingItemCheck = new Setting<>("Using Item Check", false).addToGroup(gAttack);
     /** When the aura stands down entirely (no aim, no hits): each one its own switch. */
@@ -182,9 +184,11 @@ public class Kilaura extends Module {
     public final Setting<Integer> thudY = new Setting<>("TargetHud Y", 30, -300, 300, v -> targetHud.getValue()).addToGroup(gTargetHud);
     public final Setting<SettingGroup> esp = new Setting<>("TargetESP", new SettingGroup(false, 0));
     public final Setting<EspVariant> espVariant = new Setting<>("Variant", EspVariant.NurikZapen).addToGroup(esp);
+    public final Setting<thunder.hack.utility.render.Render3DEngine.GhostStyle> ghostStyle = new Setting<>("Ghost Style",
+            thunder.hack.utility.render.Render3DEngine.GhostStyle.Orbit, v -> espVariant.is(EspVariant.Ghosts)).addToGroup(esp);
     public final Setting<Float> espScale = new Setting<>("ESPScale", 1f, 0.5f, 2f, v -> espVariant.is(EspVariant.NurikZapen)).addToGroup(esp);
     // Ghosts ("Dusze") and Crystals ("Kryształy"): their colour
-    public final Setting<ColorSetting> espColor = new Setting<>("Color", new ColorSetting(0xFF8A5CFF), v -> espVariant.is(EspVariant.Ghosts) || espVariant.is(EspVariant.Crystals)).addToGroup(esp);
+    public final Setting<ColorSetting> espColor = new Setting<>("Color", new ColorSetting(0xFF8A5CFF), v -> espVariant.is(EspVariant.Crystals)).addToGroup(esp);
     // Rockstar TargetESP's "Circle Size" (its DepthTest has nothing to switch here: the ESP is drawn on the 2D layer)
     public final Setting<Float> circleSize = new Setting<>("Circle Size", 0.4f, 0.1f, 1f, v -> espVariant.is(EspVariant.RockstarJello)).addToGroup(esp);
     // Celestial KillAura's own target ESPs (Jello / Astolfo circle, Sims Mark)
@@ -505,7 +509,7 @@ public class Kilaura extends Module {
         if (target == null) return;
         // Auto Weapon only arms you when you are holding something that is not a weapon - a sword (or axe, mace,
         // trident) already in hand is never swapped for whatever hits a little harder
-        if (autoWeapon.getValue() && !isWeapon(mc.player.getMainHandStack())) {
+        if (!noSlotSwitch.getValue() && autoWeapon.getValue() && !isWeapon(mc.player.getMainHandStack())) {
             int best = getBestWeapon();
             if (best != mc.player.getInventory().getSelectedSlot()) {
                 mc.player.getInventory().setSelectedSlot(best);
@@ -617,7 +621,7 @@ public class Kilaura extends Module {
     private void onPreMotion() {
         if (target == null) return;
         if (!doesHotbarHaveAxe()) return;
-        if (autoWeapon.getValue()) return;
+        if (noSlotSwitch.getValue() || autoWeapon.getValue()) return;
         if (shieldBreaker.getValue() && (target.getOffHandStack().isOf(Items.SHIELD) || target.getMainHandStack().isOf(Items.SHIELD))) {
             if (target.isBlocking() && target.isUsingItem() && isActiveItemStackBlocking(target, (int) (float) shieldBlockTicks.getValue())) {
                 RotationMode mode = rotationMode.getValue();
@@ -1080,6 +1084,9 @@ public class Kilaura extends Module {
     // =====================================================================================
     @Override
     public void onRender3D(MatrixStack stack) {
+        // ThunderHack V2 ghosts: the same souls (and defaults) as Aura's GombalV2 ESP
+        if (target != null && espVariant.is(EspVariant.Ghosts))
+            Render3DEngine.renderGhosts(14, 8, 1.8f, 3f, target, ghostStyle.getValue());
     }
 
     @Override
@@ -1242,7 +1249,9 @@ public class Kilaura extends Module {
                 if (target.getHealth() > 0 && mc.player.distanceTo(target) <= range.getValue() + preAimRange.getValue())
                     TargetEspStyles.rockstarJello(context, target, p, circleSize.getValue());
             }
-            case Ghosts -> TargetEspStyles.ghosts(context, target, p, espColor.getValue().getColor());
+            // Ghosts are the ThunderHack V2 souls, drawn in the world - see onRender3D
+            case Ghosts -> {
+            }
             case Crystals -> TargetEspStyles.crystals(context, target, p, espColor.getValue().getColor());
             case RockstarSims -> {
                 if (target.getHealth() > 0 && mc.player.distanceTo(target) <= range.getValue() + preAimRange.getValue())

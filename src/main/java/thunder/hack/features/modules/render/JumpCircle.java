@@ -84,7 +84,11 @@ public class JumpCircle extends Module {
 
         cache.forEach(pl -> {
             if (pl != null && !pl.isOnGround()) {
-                circles.add(new Circle(new Vec3d(pl.getX(), Math.floor(pl.getY()) + 0.03, pl.getZ()), new Timer()));
+                // Only a real jump: leaving the ground while rising. Walking off a ledge also leaves the ground,
+                // but the player is already falling, and that used to drop a circle too.
+                boolean rising = pl.getY() - pl.lastY > 0.02 || (pl == mc.player && pl.getVelocity().y > 0.1);
+                if (rising)
+                    circles.add(new Circle(new Vec3d(pl.getX(), Math.floor(pl.lastY) + 0.03, pl.getZ()), new Timer()));
                 cache.remove(pl);
             }
         });

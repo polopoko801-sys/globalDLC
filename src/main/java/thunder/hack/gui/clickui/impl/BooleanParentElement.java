@@ -77,9 +77,9 @@ public class BooleanParentElement extends AbstractElement {
             } else {
                 getParentSetting().getValue().setExtended(!getParentSetting().getValue().isExtended());
                 if (getParentSetting().getValue().isExtended()) {
-                    Managers.SOUND.playSwipeIn();
+                    thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP);
                 } else {
-                    Managers.SOUND.playSwipeOut();
+                    thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP);
                 }
             }
         }

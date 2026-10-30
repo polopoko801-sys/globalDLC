@@ -93,6 +93,8 @@ public class Aura extends Module {
     public final Setting<Integer> espFactor = new Setting<>("ESPFactor", 8, 1, 20, v -> esp.is(ESP.GombalV2)).addToGroup(espGroup);
     public final Setting<Float> espShaking = new Setting<>("ESPShaking", 1.8f, 1.5f, 10f, v -> esp.is(ESP.GombalV2)).addToGroup(espGroup);
     public final Setting<Float> espAmplitude = new Setting<>("ESPAmplitude", 3f, 0.1f, 8f, v -> esp.is(ESP.GombalV2)).addToGroup(espGroup);
+    public final Setting<thunder.hack.utility.render.Render3DEngine.GhostStyle> ghostStyle = new Setting<>("Ghost Style",
+            thunder.hack.utility.render.Render3DEngine.GhostStyle.Orbit, v -> esp.is(ESP.GombalV2)).addToGroup(espGroup);
 
     public final Setting<Sort> sort = new Setting<>("Sort", Sort.LowestDistance);
     public final Setting<Boolean> lockTarget = new Setting<>("LockTarget", true);
@@ -583,7 +585,7 @@ public class Aura extends Module {
         switch (esp.getValue()) {
             case CelkaPasta -> Render3DEngine.drawOldTargetEsp(stack, target);
             case NurikZapen -> CaptureMark.render(target);
-            case GombalV2 -> Render3DEngine.renderGhosts(espLength.getValue(), espFactor.getValue(), espShaking.getValue(), espAmplitude.getValue(), target);
+            case GombalV2 -> Render3DEngine.renderGhosts(espLength.getValue(), espFactor.getValue(), espShaking.getValue(), espAmplitude.getValue(), target, ghostStyle.getValue());
             case Gombal -> Render3DEngine.drawTargetEsp(stack, target);
         }
 

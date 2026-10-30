@@ -101,35 +101,13 @@ public final class CircleButton {
             Render2DEngine.drawRound(context, drawX - r, cy - r + 2f, r * 2f, r * 2f, r, new Color(0, 0, 0, a));
         }
 
-        // The glass disc - a vertical two-tone (lighter top, darker bottom) reads as a lit curved surface.
-        int fill = Math.round((206 + 34 * hover) * shown);
-        Render2DEngine.drawRound(context, left, top, diameter, diameter, radiusNow,
-                new Color(40, 40, 50, fill));
-        // a subtle accent wash at the bottom of the disc on hover, so the colour bleeds into the glass
-        if (hover > 0.01f) {
-            Color accent = thunder.hack.features.modules.client.HudEditor.getColor(90);
-            Render2DEngine.drawRound(context, left, cy, diameter, radiusNow, radiusNow,
-                    Render2DEngine.injectAlpha(accent, Math.round(40 * hover * shown)));
-        }
-
-        // A lighter disc inset inside the dark one. Two flat tones with a gap between them read as a lit
-        // surface far more cheaply than a real radial gradient, and it is what stops the button looking like
-        // a hole punched in the wallpaper - the inside now has its own light rather than only an edge.
-        float innerInset = radiusNow * 0.26f;
-        float innerRadius = radiusNow - innerInset;
-        Render2DEngine.drawRound(context, drawX - innerRadius, cy - innerRadius,
-                innerRadius * 2f, innerRadius * 2f, innerRadius,
-                new Color(255, 255, 255, Math.round((12 + 16 * hover) * shown)));
-
-        drawRim(context, drawX, cy, radiusNow, shown, hover);
+        // Frosted glass, the same as every other menu panel: the wallpaper blurred under a neutral veil. No rim
+        // and no accent colour - the button takes its colour from the wallpaper behind it, nothing else.
+        MenuGlass.draw(context, left, top, diameter, diameter, radiusNow, shown, hover);
 
         float glyph = diameter * 0.56f;
         Color icon = new Color(255, 255, 255, Math.round((226 + 29 * hover) * shown));
-        // The disc colour is handed to the glyph so a ring can be made by drawing a smaller disc back in it.
-        // There is no way to cut a hole in this engine, and at this size a drawn ring is invisible - see the
-        // note on drawGlyph.
-        Color hole = new Color(34, 34, 42, fill);
-        drawGlyph(context, drawX, cy, glyph, icon, hole);
+        drawGlyph(context, drawX, cy, glyph, icon);
 
         /* The label fades in under the button only while hovered - a row of five permanent captions is
          * clutter, and the icons are recognisable enough to not need them at rest. */
@@ -140,31 +118,6 @@ public final class CircleButton {
                     drawX - width / 2f, cy + radiusNow + 7f,
                     new Color(255, 255, 255, Math.round(230 * labelAlpha)).getRGB());
         }
-    }
-
-    /**
-     * The hairline edge.
-     *
-     * <p>Drawn as a real ring through {@code drawArc}: the engine cannot punch a hole in a filled circle - a
-     * transparent fill draws nothing rather than cutting - so an outline has to be an outline. The top half is
-     * brighter than the bottom, which is what reads as a lit curved edge.
-     */
-    private void drawRim(DrawContext context, float cx, float cy, float radius, float shown, float hover) {
-        float thickness = 1.1f;
-        float d = radius * 2f;
-        float left = cx - radius, top = cy - radius;
-
-        // rim brightens AND tints towards the accent on hover, so the edge catches coloured light
-        Color accent = thunder.hack.features.modules.client.HudEditor.getColor(0);
-        int br = Math.round(255 - (255 - accent.getRed()) * hover * 0.5f);
-        int bg = Math.round(255 - (255 - accent.getGreen()) * hover * 0.5f);
-        int bb = Math.round(255 - (255 - accent.getBlue()) * hover * 0.5f);
-        Color bright = new Color(br, bg, bb, Math.round((150 + 85 * hover) * shown));
-        Color dim = new Color(br, bg, bb, Math.round((55 + 45 * hover) * shown));
-
-        // 0 is straight up in this engine's arc convention, and angles run clockwise.
-        Render2DEngine.drawArc(context, left, top, d, d, radius, thickness, -110f, 70f, bright, dim);
-        Render2DEngine.drawArc(context, left, top, d, d, radius, thickness, 70f, 250f, dim, bright);
     }
 
     /* ------------------------------------------------------------------ */
@@ -226,21 +179,29 @@ public final class CircleButton {
     }
 
     /**
-     * A ring, made by drawing a disc and then the background colour back over its middle.
+     * A ring - or an arc of one - made of overlapping dots laid along its middle line.
      *
-     * <p>Not {@code drawArc}. That produces a band between an inner and an outer radius, which is correct in
-     * principle and invisible in practice here: a button is about forty pixels across, the glyph half of that,
-     * and a ring inside the glyph ends up with a radius of two or three pixels and a band of one. Rendered as
-     * ninety thin triangles it comes out as nothing at all - which is exactly what happened, and why the first
-     * version showed only the gear's teeth and the power symbol's stem, the two parts not made of arcs.
+     * <p>Not {@code drawArc}: at this size its band of thin triangles renders as nothing. And not a disc with
+     * the middle painted back over it: on glass there is no flat colour to paint the middle with, and redrawing
+     * the blur there showed as a grey dot. Dots always resolve, however small, and leave the middle genuinely
+     * empty so the glass shows through.
      *
-     * <p>Two filled discs always resolve, however small. The cost is needing to know what is behind, which is
-     * why the caller passes its own fill colour in.
+     * @param from degrees, 0 straight up, running clockwise
      */
     private static void ring(DrawContext context, float cx, float cy, float size,
-                             float gx, float gy, float radius, float thickness, Color color, Color hole) {
-        disc(context, cx, cy, size, gx, gy, radius, color);
-        disc(context, cx, cy, size, gx, gy, Math.max(0.5f, radius - thickness), hole);
+                             float gx, float gy, float radius, float thickness, float from, float to, Color color) {
+        float scale = size / GRID;
+        float mid = (radius - thickness / 2f) * scale;
+        float dot = thickness / 2f * scale;
+        float x = at(cx, size, gx), y = at(cy, size, gy);
+        // dense enough that neighbouring dots overlap by most of their width, so the band reads as one line
+        float length = (float) (Math.PI * 2 * mid * (to - from) / 360f);
+        int steps = Math.max(16, Math.round(length / Math.max(0.35f, dot * 0.45f)));
+        for (int i = 0; i <= steps; i++) {
+            double a = Math.toRadians(from + (to - from) * i / (double) steps);
+            float px = x + (float) Math.sin(a) * mid, py = y - (float) Math.cos(a) * mid;
+            Render2DEngine.drawRound(context, px - dot, py - dot, dot * 2f, dot * 2f, dot, color);
+        }
     }
 
     /** A filled rounded bar between two grid points, used for limbs and stems. */
@@ -262,7 +223,7 @@ public final class CircleButton {
      * reference these are modelled on uses filled white symbols for the same reason: at forty pixels a glyph
      * is read by its silhouette, not by its line work.
      */
-    private void drawGlyph(DrawContext context, float cx, float cy, float size, Color color, Color hole) {
+    private void drawGlyph(DrawContext context, float cx, float cy, float size, Color color) {
         switch (kind) {
             case SINGLEPLAYER -> person(context, cx, cy, size, color);
             case MULTIPLAYER -> {
@@ -272,9 +233,9 @@ public final class CircleButton {
                         Render2DEngine.injectAlpha(color, Math.round(color.getAlpha() * 0.6f)));
                 person(context, cx + size * 0.15f, cy, size * 0.9f, color);
             }
-            case SETTINGS -> gear(context, cx, cy, size, color, hole);
-            case EXIT -> power(context, cx, cy, size, color, hole);
-            case PROFILE -> badge(context, cx, cy, size, color, hole);
+            case SETTINGS -> gear(context, cx, cy, size, color);
+            case EXIT -> power(context, cx, cy, size, color);
+            case PROFILE -> badge(context, cx, cy, size, color);
         }
     }
 
@@ -285,28 +246,26 @@ public final class CircleButton {
         bar(context, cx, cy, size, 12f, 17.5f, 13f, 8f, 3.6f, color);
     }
 
-    /** A cog: a solid disc with the middle taken back out, plus eight teeth. */
-    private static void gear(DrawContext context, float cx, float cy, float size, Color color, Color hole) {
+    /** A cog: a thick ring with eight teeth, the middle left open. */
+    private static void gear(DrawContext context, float cx, float cy, float size, Color color) {
         for (int i = 0; i < 8; i++) {
             double angle = Math.toRadians(i * 45.0);
             float dx = (float) Math.sin(angle), dy = -(float) Math.cos(angle);
             bar(context, cx, cy, size, 12f + dx * 8.6f, 12f + dy * 8.6f, 4.2f, 4.2f, 1.2f, color);
         }
 
-        ring(context, cx, cy, size, 12f, 12f, 7.4f, 3.1f, color, hole);
+        ring(context, cx, cy, size, 12f, 12f, 7.4f, 3.1f, 0f, 360f, color);
     }
 
-    /** The power symbol: a thick broken ring with a stem standing in the gap. */
-    private static void power(DrawContext context, float cx, float cy, float size, Color color, Color hole) {
-        ring(context, cx, cy, size, 12f, 13f, 7.6f, 2.9f, color, hole);
-        // The gap: the background painted back over the top of the ring, then the stem through it.
-        bar(context, cx, cy, size, 12f, 5.8f, 6.4f, 5.2f, 0f, hole);
+    /** The power symbol: a thick ring broken at the top, with a stem standing in the gap. */
+    private static void power(DrawContext context, float cx, float cy, float size, Color color) {
+        ring(context, cx, cy, size, 12f, 13f, 7.6f, 2.9f, 38f, 322f, color);
         bar(context, cx, cy, size, 12f, 7.4f, 2.9f, 9f, 1.4f, color);
     }
 
     /** A person inside a ring - a profile picture, which is what distinguishes it from Singleplayer. */
-    private static void badge(DrawContext context, float cx, float cy, float size, Color color, Color hole) {
-        ring(context, cx, cy, size, 12f, 12f, 11f, 2.4f, color, hole);
+    private static void badge(DrawContext context, float cx, float cy, float size, Color color) {
+        ring(context, cx, cy, size, 12f, 12f, 11f, 2.4f, 0f, 360f, color);
         disc(context, cx, cy, size, 12f, 9.4f, 3f, color);
         bar(context, cx, cy, size, 12f, 16.6f, 9.4f, 5.8f, 2.6f, color);
     }

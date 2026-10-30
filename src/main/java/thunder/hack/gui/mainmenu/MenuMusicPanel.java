@@ -39,7 +39,7 @@ public final class MenuMusicPanel {
 
     /** Card size in scaled pixels. Everything else is derived from these two. */
     public static final float WIDTH = 236f;
-    public static final float HEIGHT = 74f;
+    public static final float HEIGHT = 90f;
 
     private static final float PAD = 10f;
     private static final float COVER = 44f;
@@ -71,14 +71,20 @@ public final class MenuMusicPanel {
                     snapshot.progressMs(), snapshot.durationMs(), snapshot.playing());
         }
 
-        NowPlaying.Track track = NowPlaying.current();
+        // Not logged in: the window title gives the track, the shared TitleClock the position (from when the
+        // song changed, paused while Spotify is paused), and lrclib the length - so the bar and the minute work too.
+        NowPlaying.Track track = thunder.hack.utility.spotify.TitleClock.current();
         if (track == null) return new View(false, false, "", "", null, 0L, 0L, false);
 
+        // length: the Windows media session's when it has one, else lrclib's
+        long sessionLength = thunder.hack.utility.spotify.TitleClock.duration();
+        var lyrics = thunder.hack.utility.spotify.Lyrics.get(track.title(), track.artist(), sessionLength);
+        long length = sessionLength > 0 ? sessionLength : lyrics != null ? lyrics.durationMs() : 0L;
+        long position = thunder.hack.utility.spotify.TitleClock.position();
         return new View(true, false, track.title(), track.artist(),
                 CoverArt.of(track.artist(), track.title()),
-                // A window title carries no position and no length. Rather than invent either, the bar is left
-                // empty and the stamps blank - the honest answer, and the reason the Spotify path exists.
-                0L, 0L, true);
+                length > 0 ? Math.min(position, length) : position, length,
+                thunder.hack.utility.spotify.TitleClock.playing());
     }
 
     /**
@@ -89,24 +95,30 @@ public final class MenuMusicPanel {
      */
     public static boolean render(DrawContext context, float centreX, float top, float alpha, int mouseX, int mouseY) {
         View view = read();
-        if (!view.present() || alpha <= 0.01f) {
+        if (alpha <= 0.01f) {
             buttonSize = 0f;
             return false;
         }
+        // The card always sits under the clock; with nothing playing it says so and the transport still
+        // sends the media keys, which is how you start something from here.
+        if (!view.present())
+            view = new View(true, view.live(), "Nic nie gra", "Włącz muzykę w Spotify", null, 0L, 0L, false);
 
         float left = centreX - WIDTH / 2f;
         int a = Math.round(Math.clamp(alpha, 0f, 1f) * 255f);
 
-        // A soft shadow under the card is most of what lifts it off the wallpaper - without it the plate reads
-        // as a hole cut in the image rather than as something lying on top of it.
-        Render2DEngine.drawBlurredShadow(context, left, top, WIDTH, HEIGHT, 14,
-                new Color(0, 0, 0, Math.round(110 * alpha)));
-        Render2DEngine.drawRound(context, left, top, WIDTH, HEIGHT, RADIUS, fade(PLATE, alpha));
+        // the current lyric, when MusicWidget's Lyrics setting is on and there is one to show
+        boolean lyricsOn = lyricsOn();
+        String lyric = lyricsOn ? lyricLine(view) : "";
+        float height = height();
+
+        // Frosted glass like the rest of the menu - the wallpaper blurred behind it, no rim, no accent glow.
+        MenuGlass.draw(context, left, top, WIDTH, height, RADIUS, alpha, 0f);
 
         /* Artwork, drawn as served and framed rather than clipped - the engine has no rounded scissor. */
         float coverX = left + PAD, coverY = top + PAD;
         Render2DEngine.drawRound(context, coverX, coverY, COVER, COVER, 7f,
-                new Color(10, 10, 13, Math.round(230 * alpha)));
+                new Color(255, 255, 255, Math.round(18 * alpha)));
 
         if (view.cover() != null)
             Render2DEngine.renderTexture(context, view.cover(), coverX + 1.5f, coverY + 1.5f,
@@ -116,34 +128,65 @@ public final class MenuMusicPanel {
         float textX = coverX + COVER + 11f;
         float textW = left + WIDTH - PAD - textX;
 
-        FontRenderers.sf_bold_mini.drawString(context, clip(view.title(), textW),
+        FontRenderers.sf_bold_mini.drawString(context, clip(FontRenderers.sf_bold_mini, view.title(), textW),
                 textX, top + PAD + 2f, fade(TITLE, alpha).getRGB());
         FontRenderers.sf_medium_mini.drawString(context, clip(view.artist(), textW),
                 textX, top + PAD + 14f, fade(ARTIST, alpha).getRGB());
 
         drawProgress(context, view, textX, top, left, alpha);
         drawTransport(context, view, centreX, top, alpha, mouseX, mouseY);
+
+        if (lyricsOn) {
+            String shown = lyric.isEmpty() ? "..." : lyric;
+            FontRenderers.sf_medium_mini.drawCenteredString(context, clip(shown, WIDTH - PAD * 2), centreX,
+                    top + HEIGHT + 2f, fade(lyric.isEmpty() ? STAMP : TITLE, alpha).getRGB());
+        }
         return true;
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Lyrics                                                              */
+    /* ------------------------------------------------------------------ */
+
+    /** Extra height the card grows by while the lyric line is shown. */
+    private static final float LYRIC_ROW = 16f;
+
+    /** Switched in the MusicWidget module's settings (Lyrics), not on the card. */
+    private static boolean lyricsOn() {
+        return thunder.hack.core.manager.client.ModuleManager.musicWidget.showsLyrics();
+    }
+
+    /** The card's height right now, lyric row included. */
+    public static float height() {
+        return HEIGHT + (lyricsOn() ? LYRIC_ROW : 0f);
+    }
+
+    private static String lyricLine(View view) {
+        // live: Spotify's own length helps lrclib match; window-title mode looks up by name alone
+        var lyrics = thunder.hack.utility.spotify.Lyrics.get(view.title(), view.artist(), view.live() ? view.duration() : 0L);
+        return lyrics == null || !lyrics.synced() ? "" : lyrics.lineAt(view.position());
+    }
+
+    /**
+     * Spotify's bottom row, across the whole card: elapsed time on the left, the bar, the length on the right.
+     * With no real position (not logged in) the stamps read "--:--" and the bar stays empty rather than guess.
+     */
     private static void drawProgress(DrawContext context, View view, float textX, float top, float left, float alpha) {
-        float y = top + PAD + 30f;
+        var font = FontRenderers.sf_medium_mini;
+        boolean known = view.duration() > 0;
+        String elapsed = SpotifyPlayer.stamp(view.position());   // the clock always runs; only the length can be unknown
+        String total = known ? SpotifyPlayer.stamp(view.duration()) : "--:--";
 
-        String elapsed = view.duration() > 0 ? SpotifyPlayer.stamp(view.position()) : "";
-        String total = view.duration() > 0 ? SpotifyPlayer.stamp(view.duration()) : "";
+        float rowY = top + HEIGHT - 15f;                  // text baseline row at the bottom of the card
+        float l = left + PAD + 2f, r = left + WIDTH - PAD - 2f;
+        float elapsedW = font.getStringWidth(elapsed), totalW = font.getStringWidth(total);
 
-        float right = left + WIDTH - PAD;
-        float elapsedW = elapsed.isEmpty() ? 0f : FontRenderers.sf_medium_mini.getStringWidth(elapsed);
-        float totalW = total.isEmpty() ? 0f : FontRenderers.sf_medium_mini.getStringWidth(total);
+        font.drawString(context, elapsed, l, rowY, fade(STAMP, alpha).getRGB());
+        font.drawString(context, total, r - totalW, rowY, fade(STAMP, alpha).getRGB());
 
-        if (!elapsed.isEmpty())
-            FontRenderers.sf_medium_mini.drawString(context, elapsed, textX, y - 1f, fade(STAMP, alpha).getRGB());
-        if (!total.isEmpty())
-            FontRenderers.sf_medium_mini.drawString(context, total, right - totalW, y - 1f, fade(STAMP, alpha).getRGB());
-
-        barLeft = textX;
-        barWidth = Math.max(8f, right - textX);
-        barY = y + 9f;
+        barLeft = l + elapsedW + 7f;
+        barWidth = Math.max(8f, (r - totalW - 7f) - barLeft);
+        barY = rowY + 3f;
 
         Render2DEngine.drawRound(context, barLeft, barY, barWidth, 2f, 1f, fade(TRACK_BG, alpha));
 
@@ -157,7 +200,7 @@ public final class MenuMusicPanel {
     private static void drawTransport(DrawContext context, View view, float centreX, float top,
                                       float alpha, int mouseX, int mouseY) {
         buttonSize = 11f;
-        buttonY = top + HEIGHT - 20f;
+        buttonY = top + PAD + 33f;   // under the title and artist; the bottom row is the progress bar
 
         float gap = 26f;
         playX = centreX - buttonSize / 2f;
@@ -187,7 +230,7 @@ public final class MenuMusicPanel {
     /** True when the cursor is anywhere on the card, so the menu knows not to treat the click as "open". */
     public static boolean covers(double mx, double my, float centreX, float top) {
         float left = centreX - WIDTH / 2f;
-        return mx >= left && mx <= left + WIDTH && my >= top && my <= top + HEIGHT;
+        return mx >= left && mx <= left + WIDTH && my >= top && my <= top + height();
     }
 
     /**
@@ -197,6 +240,7 @@ public final class MenuMusicPanel {
      */
     public static boolean click(double mx, double my) {
         if (buttonSize <= 0f) return false;
+
 
         boolean live = SpotifyAuth.authorised();
 
@@ -261,8 +305,12 @@ public final class MenuMusicPanel {
     }
 
     private static String clip(String text, float maxWidth) {
+        return clip(FontRenderers.sf_medium_mini, text, maxWidth);
+    }
+
+    /** Clips by the font the text is actually drawn in - measuring bold text with the regular font let it overflow. */
+    private static String clip(thunder.hack.gui.font.FontRenderer font, String text, float maxWidth) {
         if (text == null || text.isEmpty()) return "";
-        var font = FontRenderers.sf_medium_mini;
         if (font.getStringWidth(text) <= maxWidth) return text;
 
         StringBuilder sb = new StringBuilder();

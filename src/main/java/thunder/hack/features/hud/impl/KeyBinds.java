@@ -46,6 +46,8 @@ public class KeyBinds extends HudElement {
     private static final float LIST_OFFSET2 = 8.0F;
 
     private final Map<Module, RockstarRender.Translate> translates = new HashMap<>();
+    /** LiquidGlass: the slide-in / slide-out of each row. */
+    private final thunder.hack.features.hud.RowAnimator<Module> slide = new thunder.hack.features.hud.RowAnimator<>(260f);
     /** Minecraft.frameTime: the last frame's length in ms. */
     private long lastFrameNanos = System.nanoTime();
 
@@ -66,6 +68,27 @@ public class KeyBinds extends HudElement {
 
         List<Module> modules = new ArrayList<>(Managers.MODULE.modules);
         modules.sort(Comparator.comparing(m -> -clientFont.getStringWidth(m.getName())));
+
+        if (mode.is(Mode.LiquidGlass)) {
+            // every bound module is a candidate; turning it on slides its row in from the left, turning it off
+            // slides it back out to the left
+            slide.frame();
+            List<GlassPanel.Row> glassRows = new ArrayList<>();
+            for (Module feature : modules) {
+                if (feature == ModuleManager.clickGui) continue;
+                if (feature.getBind().getKey() == -1 || "None".equals(feature.getBind().getBind())) continue;
+                float p = slide.update(feature, feature.isEnabled());
+                if (p > 0f) glassRows.add(new GlassPanel.Row(null, feature.getName(), getShortKeyName(feature), p));
+            }
+            if (glassRows.isEmpty()) {
+                setBounds(left, top, 0, 0);
+                return;
+            }
+            float gw = GlassPanel.width(glassTitle.getValue(), glassRows, 90);
+            GlassPanel.draw(context, left, top, gw, glassTitle.getValue(), thunder.hack.utility.render.TextureStorage.keyboardIcon, glassRows, HudEditor.getColor(0));
+            setBounds(left, top, gw, GlassPanel.height(glassRows));
+            return;
+        }
 
         float yDist = 1;
         double lastTranslateY = 0;
