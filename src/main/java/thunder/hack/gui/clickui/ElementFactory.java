@@ -49,7 +49,7 @@ public final class ElementFactory {
         if (el instanceof ColorPickerElement picker) return picker.getHeight();
         if (el instanceof SliderElement) return 18;
         if (el instanceof ModeElement combo)
-            return combo.isOpen() ? 13 + (combo.getSetting().getModes().length * 12) : 13;
+            return 13 + combo.listHeight();
         return 13;
     }
 
@@ -60,7 +60,7 @@ public final class ElementFactory {
         else if (el instanceof SliderElement) el.setHeight(18);
         else if (el instanceof ModeElement combo) {
             combo.setWHeight(13);
-            el.setHeight(combo.isOpen() ? 13 + (combo.getSetting().getModes().length * 12) : 13);
+            el.setHeight(13 + combo.listHeight());
         }
     }
 }

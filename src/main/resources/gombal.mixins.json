@@ -9,6 +9,7 @@
     "MixinBossBarHud",
     "MixinCamera",
     "MixinChatInputSuggestor",
+    "MixinChatScreen",
     "MixinClientBrandRetriever",
     "MixinClientConnection",
     "MixinClientPlayerEntity",

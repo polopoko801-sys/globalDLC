@@ -34,8 +34,8 @@ public final class SpotifyIcons {
         float gap = size * 0.18f;
         float left = x + (size - bar * 2 - gap) / 2f;
 
-        Render2DEngine.drawRound(context, left, y + size * 0.14f, bar, size * 0.72f, bar * 0.35f, color);
-        Render2DEngine.drawRound(context, left + bar + gap, y + size * 0.14f, bar, size * 0.72f, bar * 0.35f, color);
+        Render2DEngine.drawRoundSmooth(context, left, y + size * 0.14f, bar, size * 0.72f, bar * 0.35f, color);
+        Render2DEngine.drawRoundSmooth(context, left + bar + gap, y + size * 0.14f, bar, size * 0.72f, bar * 0.35f, color);
     }
 
     public static void next(DrawContext context, float x, float y, float size, Color color) {
@@ -54,39 +54,22 @@ public final class SpotifyIcons {
         float width = size * 0.56f;
 
         if (back) {
-            Render2DEngine.drawRound(context, x + size * 0.1f, top, bar, height, bar * 0.4f, color);
+            Render2DEngine.drawRoundSmooth(context, x + size * 0.1f, top, bar, height, bar * 0.4f, color);
             backTriangle(context, x + size * 0.1f + bar + size * 0.04f, top, width, height, color);
         } else {
             triangle(context, x + size * 0.14f, top, width, height, color);
-            Render2DEngine.drawRound(context, x + size * 0.9f - bar, top, bar, height, bar * 0.4f, color);
+            Render2DEngine.drawRoundSmooth(context, x + size * 0.9f - bar, top, bar, height, bar * 0.4f, color);
         }
     }
 
     /** A filled triangle pointing right, inside the given box. */
     public static void triangle(DrawContext context, float x, float y, float width, float height, Color color) {
-        // Drawn as a stack of one-pixel rows: the engine has no triangle primitive, and a stack of rows
-        // antialiases no worse than a raw triangle would at these sizes while needing no new shader.
-        int rows = Math.max(3, (int) Math.ceil(height));
-        float step = height / rows;
-
-        for (int i = 0; i < rows; i++) {
-            float t = (i + 0.5f) / rows;
-            // Widest at the vertical middle, tapering to a point at the tip.
-            float span = width * (1f - Math.abs(t - 0.5f) * 2f);
-            Render2DEngine.drawRect(context, x, y + i * step, Math.max(0.6f, span), step + 0.4f, color);
-        }
+        // a real anti-aliased triangle - the old stack of one-pixel rows showed as a staircase on the slopes
+        Render2DEngine.drawPolygonSmooth(context, new float[]{x, x + width, x}, new float[]{y, y + height / 2f, y + height}, color);
     }
 
     private static void backTriangle(DrawContext context, float x, float y, float width, float height, Color color) {
-        int rows = Math.max(3, (int) Math.ceil(height));
-        float step = height / rows;
-
-        for (int i = 0; i < rows; i++) {
-            float t = (i + 0.5f) / rows;
-            float span = width * (1f - Math.abs(t - 0.5f) * 2f);
-            span = Math.max(0.6f, span);
-            Render2DEngine.drawRect(context, x + width - span, y + i * step, span, step + 0.4f, color);
-        }
+        Render2DEngine.drawPolygonSmooth(context, new float[]{x + width, x, x + width}, new float[]{y, y + height / 2f, y + height}, color);
     }
 
     /* ------------------------------------------------------------------ */
@@ -120,17 +103,17 @@ public final class SpotifyIcons {
         arrowHead(context, x + size * 0.66f, y + size * 0.22f, size * 0.24f, color, true);
 
         if (one)
-            Render2DEngine.drawRound(context, x + size * 0.44f, y + size * 0.44f, size * 0.13f, size * 0.13f,
+            Render2DEngine.drawRoundSmooth(context, x + size * 0.44f, y + size * 0.44f, size * 0.13f, size * 0.13f,
                     size * 0.07f, color);
     }
 
     /** A rectangular frame of the given thickness, drawn as four bars. */
     private static void outline(DrawContext context, float x, float y, float width, float height,
                                float t, Color color) {
-        Render2DEngine.drawRound(context, x, y, width, t, t * 0.4f, color);
-        Render2DEngine.drawRound(context, x, y + height - t, width, t, t * 0.4f, color);
-        Render2DEngine.drawRound(context, x, y, t, height, t * 0.4f, color);
-        Render2DEngine.drawRound(context, x + width - t, y, t, height, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x, y, width, t, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x, y + height - t, width, t, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x, y, t, height, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x + width - t, y, t, height, t * 0.4f, color);
     }
 
     /** A small filled arrowhead, pointing right or left. */
@@ -167,8 +150,8 @@ public final class SpotifyIcons {
     /** A plus. */
     public static void plus(DrawContext context, float x, float y, float size, Color color) {
         float t = Math.max(1.2f, size * 0.16f);
-        Render2DEngine.drawRound(context, x + (size - t) / 2f, y + size * 0.15f, t, size * 0.7f, t * 0.4f, color);
-        Render2DEngine.drawRound(context, x + size * 0.15f, y + (size - t) / 2f, size * 0.7f, t, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x + (size - t) / 2f, y + size * 0.15f, t, size * 0.7f, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x + size * 0.15f, y + (size - t) / 2f, size * 0.7f, t, t * 0.4f, color);
     }
 
     /** Three stacked bars - a queue or a list. */
@@ -180,7 +163,7 @@ public final class SpotifyIcons {
             float ly = y + size * 0.22f + i * gap;
             // The top bar is short so the shape is a list rather than a hamburger menu.
             float width = i == 0 ? size * 0.5f : size * 0.72f;
-            Render2DEngine.drawRound(context, x + size * 0.14f, ly, width, t, t * 0.4f, color);
+            Render2DEngine.drawRoundSmooth(context, x + size * 0.14f, ly, width, t, t * 0.4f, color);
         }
     }
 
@@ -188,7 +171,7 @@ public final class SpotifyIcons {
     public static void volume(DrawContext context, float x, float y, float size, Color color, int percent) {
         float bodyX = x + size * 0.16f;
 
-        Render2DEngine.drawRound(context, bodyX, y + size * 0.38f, size * 0.14f, size * 0.24f, size * 0.04f, color);
+        Render2DEngine.drawRoundSmooth(context, bodyX, y + size * 0.38f, size * 0.14f, size * 0.24f, size * 0.04f, color);
         triangle(context, bodyX + size * 0.1f, y + size * 0.2f, size * 0.22f, size * 0.6f, color);
 
         if (percent < 0) return;
@@ -197,7 +180,7 @@ public final class SpotifyIcons {
             float wx = x + size * 0.56f + i * size * 0.16f;
             // Each wave lights only once the volume passes it: the whole icon is the level readout.
             boolean lit = percent > (i == 0 ? 1 : 55);
-            Render2DEngine.drawRound(context, wx, y + size * (0.36f - i * 0.08f),
+            Render2DEngine.drawRoundSmooth(context, wx, y + size * (0.36f - i * 0.08f),
                     Math.max(1f, size * 0.09f), size * (0.28f + i * 0.16f), size * 0.05f,
                     lit ? color : Render2DEngine.injectAlpha(color, 55));
         }
@@ -242,14 +225,14 @@ public final class SpotifyIcons {
         float t = Math.max(1f, size * 0.1f);
 
         outline(context, x + size * 0.12f, y + size * 0.2f, size * 0.76f, size * 0.46f, t, color);
-        Render2DEngine.drawRound(context, x + size * 0.34f, y + size * 0.72f, size * 0.32f, t, t * 0.4f, color);
+        Render2DEngine.drawRoundSmooth(context, x + size * 0.34f, y + size * 0.72f, size * 0.32f, t, t * 0.4f, color);
     }
 
     /** Three dots - the context menu handle. */
     public static void more(DrawContext context, float x, float y, float size, Color color) {
         float d = Math.max(1.2f, size * 0.16f);
         for (int i = 0; i < 3; i++)
-            Render2DEngine.drawRound(context, x + size * 0.2f + i * size * 0.26f, y + (size - d) / 2f,
+            Render2DEngine.drawRoundSmooth(context, x + size * 0.2f + i * size * 0.26f, y + (size - d) / 2f,
                     d, d, d / 2f, color);
     }
 

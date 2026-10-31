@@ -338,6 +338,107 @@ public class Render2DEngine {
         renderRoundedQuad(context, color, x, y, width + x, height + y, radius, 4);
     }
 
+    /** One physical screen pixel in GUI units. */
+    public static float pixel() {
+        return 1f / (float) Math.max(1.0, mc.getWindow().getScaleFactor());
+    }
+
+    /** Snaps a GUI coordinate to the physical pixel grid, so text and sprites at eased positions stay sharp. */
+    public static float snap(float v) {
+        float px = pixel();
+        return Math.round(v / px) * px;
+    }
+
+    /**
+     * {@link #drawRound} for shapes that are looked at closely: corners tessellated by their size on screen
+     * instead of a fixed 4 steps (which read as an octagon on a big radius), and a one-pixel feathered edge
+     * fading to transparent - anti-aliasing done with geometry, since the GUI pipeline has no MSAA.
+     */
+    public static void drawRoundSmooth(DrawContext context, float x, float y, float width, float height, float radius, Color color) {
+        if (width <= 0f || height <= 0f || color.getAlpha() <= 0) return;
+        radius = Math.max(0f, Math.min(radius, Math.min(width, height) / 2f));
+        float px = pixel();
+        float half = px / 2f;
+        int steps = (int) MathHelper.clamp(radius / px * 0.6f, 4f, 40f);
+
+        // corner centres, walked clockwise in screen space: top-left, top-right, bottom-right, bottom-left
+        float[][] centres = {
+                {x + radius, y + radius}, {x + width - radius, y + radius},
+                {x + width - radius, y + height - radius}, {x + radius, y + height - radius}
+        };
+        int n = 4 * (steps + 1);
+        float[] inX = new float[n], inY = new float[n], outX = new float[n], outY = new float[n];
+        float rIn = Math.max(0f, radius - half), rOut = radius + half;
+        int k = 0;
+        for (int c = 0; c < 4; c++) {
+            for (int s = 0; s <= steps; s++) {
+                double a = Math.PI + c * Math.PI / 2 + s * (Math.PI / 2) / steps;
+                float nx = (float) Math.cos(a), ny = (float) Math.sin(a);
+                inX[k] = centres[c][0] + nx * rIn;
+                inY[k] = centres[c][1] + ny * rIn;
+                outX[k] = centres[c][0] + nx * rOut;
+                outY[k] = centres[c][1] + ny * rOut;
+                k++;
+            }
+        }
+
+        Matrix3x2f pose = GuiRender.pose(context);
+        int solid = color.getRGB();
+        int clear = solid & 0x00FFFFFF;
+        float cx = x + width / 2f, cy = y + height / 2f;
+        // Wound counter-clockwise on screen like renderRoundedQuad: the GUI pipeline culls back faces, and the
+        // clockwise order dropped every triangle - the pill came out with no fill at all.
+        GuiRender.quads(context, currentClip(), vc -> {
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n;
+                GuiRender.tri(vc, pose, cx, cy, inX[j], inY[j], inX[i], inY[i], solid);
+                GuiRender.quad(vc, pose, inX[j], inY[j], outX[j], outY[j], outX[i], outY[i], inX[i], inY[i],
+                        solid, clear, clear, solid);
+            }
+        });
+    }
+
+    /**
+     * A filled convex polygon with a one-pixel feathered edge - smooth, unlike stacking rows of rects. Triangles
+     * are emitted in both windings so the shape survives the GUI pipeline's back-face culling whichever way the
+     * points were listed.
+     */
+    public static void drawPolygonSmooth(DrawContext context, float[] xs, float[] ys, Color color) {
+        int n = xs.length;
+        if (n < 3 || color.getAlpha() <= 0) return;
+        float cx = 0f, cy = 0f;
+        for (int i = 0; i < n; i++) {
+            cx += xs[i];
+            cy += ys[i];
+        }
+        cx /= n;
+        cy /= n;
+        float half = pixel() / 2f;
+        // pull every corner in by half a pixel, then feather a pixel outward from there
+        float[] ix = new float[n], iy = new float[n], ox = new float[n], oy = new float[n];
+        for (int i = 0; i < n; i++) {
+            float dx = xs[i] - cx, dy = ys[i] - cy;
+            float len = (float) Math.sqrt(dx * dx + dy * dy);
+            float ux = len == 0f ? 0f : dx / len, uy = len == 0f ? 0f : dy / len;
+            ix[i] = xs[i] - ux * half;
+            iy[i] = ys[i] - uy * half;
+            ox[i] = xs[i] + ux * half * 2f;
+            oy[i] = ys[i] + uy * half * 2f;
+        }
+        Matrix3x2f pose = GuiRender.pose(context);
+        int solid = color.getRGB(), clear = solid & 0x00FFFFFF;
+        float fcx = cx, fcy = cy;
+        GuiRender.quads(context, currentClip(), vc -> {
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n;
+                GuiRender.tri(vc, pose, fcx, fcy, ix[i], iy[i], ix[j], iy[j], solid);
+                GuiRender.tri(vc, pose, fcx, fcy, ix[j], iy[j], ix[i], iy[i], solid);
+                GuiRender.quad(vc, pose, ix[i], iy[i], ox[i], oy[i], ox[j], oy[j], ix[j], iy[j], solid, clear, clear, solid);
+                GuiRender.quad(vc, pose, ix[j], iy[j], ox[j], oy[j], ox[i], oy[i], ix[i], iy[i], solid, clear, clear, solid);
+            }
+        });
+    }
+
     public static void renderRoundedQuad(DrawContext context, Color c, double fromX, double fromY, double toX, double toY, double radius, double samples) {
         Matrix3x2f pose = GuiRender.pose(context);
         int argb = c.getRGB();

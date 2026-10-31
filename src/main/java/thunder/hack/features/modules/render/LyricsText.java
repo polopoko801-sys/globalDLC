@@ -3,162 +3,287 @@ package thunder.hack.features.modules.render;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.util.math.Vec3d;
 import thunder.hack.features.modules.Module;
-import thunder.hack.features.modules.client.HudEditor;
 import thunder.hack.setting.Setting;
-import thunder.hack.setting.impl.ColorSetting;
-import thunder.hack.utility.NowPlaying;
-import thunder.hack.utility.spotify.Lyrics;
-import thunder.hack.utility.spotify.SpotifyAuth;
-import thunder.hack.utility.spotify.SpotifyPlayer;
+import thunder.hack.utility.spotify.SpotifyCard;
 import thunder.hack.utility.render.Render3DEngine;
 
-import java.awt.Color;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Random;
 
 /**
- * The words of the song playing on Spotify, written into the world in big Minecraft lettering - one line at
- * a time, each pinned to a random spot in your field of view, each word sliding in as it is sung. The text
- * stays put in the world as you move but always keeps the same size on screen.
+ * Live karaoke in the world: the line Spotify is singing right now is pinned to a spot in front of you, and its
+ * words light up one by one as they are sung.
  *
- * <p>Uses the same synced lyrics as the music widget ({@link Lyrics}, fetched per track from lrclib). The
- * playback position comes from the Spotify API when logged in, otherwise from the Windows media session
- * ({@link thunder.hack.utility.spotify.MediaSession}) - exact either way, so starting it mid-song shows the
- * right line at once. Lines without timestamps are not shown: with no clock to follow they would be guesses.
+ * <p><b>Where everything comes from.</b> Nothing is downloaded. {@link SpotifyCard} keeps a small, invisible
+ * Spotify window open on its lyrics view and reports the line Spotify highlights, the moment the highlight
+ * moves, and whether it is playing - so every line starts exactly when Spotify says it does. Spotify does not
+ * time single words, so inside a line each word gets a start from its syllables, at a pace learned from how long
+ * this song's lines really last.
  */
 public class LyricsText extends Module {
     public LyricsText() {
         super("TextInMinecraft", Category.RENDER);
     }
 
-    private enum ColorMode {White, Sync, Custom}
-
-    /**
-     * How a line moves. The words always arrive one by one, but with {@link #Wave} the line also keeps
-     * breathing for as long as it is on screen - which is what makes it read as animated rather than as a
-     * caption that was simply put there.
-     */
-    private enum Anim {
-        /** The line lifts into place as it fades up. */
-        Slide,
-        /** Each word pops out of nothing and settles at full size. */
-        Zoom,
-        /** A slow bob per word, each a moment behind its neighbour. */
-        Wave,
-        /** Nothing moves; the words just appear. */
-        None
-    }
+    private enum Style {Outline, Shadow}
 
     /** Size on screen - fixed, it does not change with distance. */
-    private final Setting<Float> scale = new Setting<>("Scale", 3f, 1f, 6f);
+    private final Setting<Float> scale = new Setting<>("Scale", 2.6f, 1f, 6f);
     /** How far in front of you a new line is placed, in blocks. */
     private final Setting<Float> distance = new Setting<>("Distance", 8f, 3f, 30f);
     /** How far from the centre of the view a line may land: 0 = dead centre, 1 = the edges of the view. */
-    private final Setting<Float> spread = new Setting<>("Spread", 0.7f, 0f, 1f);
-    private final Setting<Boolean> wordByWord = new Setting<>("WordByWord", true);
-    /** Wave by default: a still line is what "no animation" looked like. */
-    private final Setting<Anim> animation = new Setting<>("Animation", Anim.Wave);
-    private final Setting<Boolean> shadow = new Setting<>("Shadow", true);
-    private final Setting<ColorMode> colorMode = new Setting<>("ColorMode", ColorMode.White);
-    private final Setting<ColorSetting> color = new Setting<>("Color", new ColorSetting(Color.WHITE.getRGB()), v -> colorMode.is(ColorMode.Custom));
-    /** A small dim line at the top saying why nothing is shown (nothing playing, searching, no synced text). */
+    private final Setting<Float> spread = new Setting<>("Spread", 0.55f, 0f, 1f);
+    /** How long before its moment a word shows up. */
+    private final Setting<Integer> lead = new Setting<>("Lead", 350, 0, 1500);
+    /** Shifts everything against Spotify's clock, for a recording that runs early or late. */
+    private final Setting<Integer> offset = new Setting<>("Offset", 120, -1000, 1000);
+    /** Reveal the words one by one, or the whole line at once. */
+    private final Setting<Boolean> wordByWord = new Setting<>("Words", true);
+    private final Setting<Style> style = new Setting<>("Style", Style.Outline);
+    /** A small dim line at the top saying why nothing is shown. */
     private final Setting<Boolean> showStatus = new Setting<>("Status", true);
-    /** Shifts the lyrics against the music, for a feed that runs early or late. */
-    private final Setting<Integer> offset = new Setting<>("Offset", 0, -2000, 2000);
 
-    /** How long one line takes to fade out once the next begins. */
-    private static final long FADE_MS = 220L;
-    /** How long a single word takes to arrive. */
-    private static final long WORD_MS = 180L;
-    /** How long the whole line takes to arrive. */
-    private static final long ENTER_MS = 420L;
+    /** Fade-in of a new word, and the gentle grow that comes with it. */
+    private static final float IN_MS = 180f;
+    /** Fade-out of a finished line. */
+    private static final float OUT_MS = 300f;
+    /** How long a line stays after the last one, when the lyrics end before the track does. */
+    private static final long TAIL_MS = 4000L;
+    /** The shortest gap between two words of one line. */
+    private static final long MIN_WORD_MS = 70L;
 
-    /** The line on screen: its text, timing and the spot in the world it was pinned to. */
-    private String lastLine = "";
-    private long lastLineStart, lastLineEnd;
-    private Vec3d anchor;
-    private String anchorKey = "";
+    /** One word of a line: its text, when it is sung (ms in the song) and when it actually appeared (wall clock). */
+    private static final class Word {
+        final String text;
+        final long atMs;
+        long appearedAt;
+
+        Word(String text, long atMs) {
+            this.text = text;
+            this.atMs = atMs;
+        }
+    }
+
+    /** A line on screen: its words, the spot in the world it is pinned to, and when it is sung. */
+    private record Line(List<Word> words, Vec3d anchor, long startMs, long endMs) {
+    }
+
+    /** The line Spotify highlights: its index in the song (-1 before the first one) and its text. */
+    private int shownIndex = -1;
+    private String shownText = "";
+    /** When Spotify confirmed the current line, and how many syllables it has - for learning the pace. */
+    private long confirmedSince;
+    private int confirmedSyllables;
+    /** The line on screen - one ahead of {@link #shownIndex} while the next line is put up early. */
+    private int displayIndex = -1;
+    /** Playing time since the line started, in ms - stands still while Spotify is paused. */
+    private float lineClock;
+    private long lastFrame;
+    /** Measured length of one syllable, learned from how long the lines that went by really lasted. */
+    private float syllableMs = DEFAULT_SYLLABLE_MS;
+    private static final float DEFAULT_SYLLABLE_MS = 150f, MIN_SYLLABLE_MS = 70f, MAX_SYLLABLE_MS = 380f;
+    /** The line was sung out and has gone - it must not come back until the next one starts. */
+    private boolean finished;
+    private Line line;
+    private Line leaving;
+    private long leavingAt;
 
     private final Random random = new Random();
+
+    @Override
+    public void onEnable() {
+        shownIndex = -1;
+        shownText = "";
+        finished = false;
+        line = null;
+        leaving = null;
+        lastFrame = 0L;
+        syllableMs = DEFAULT_SYLLABLE_MS;
+        // start the reader (and its small hidden Spotify window) right away, not only once a world is drawn
+        SpotifyCard.state();
+    }
 
     @Override
     public void onRender2D(DrawContext context) {
         if (fullNullCheck()) return;
 
-        String title, artist, trackId;
-        long duration, position;
-        if (SpotifyAuth.authorised()) {
-            // keeps the poller awake while the lyrics are on screen
-            SpotifyPlayer.touch(1000L);
-            SpotifyPlayer.Snapshot track = SpotifyPlayer.state();
-            if (!track.present()) {
-                status(context, "Spotify nic nie gra");
-                return;
-            }
-            title = track.title();
-            artist = track.artist();
-            trackId = track.trackId();
-            duration = track.durationMs();
-            position = track.progressMs();
-        } else {
-            // Not logged in: the track comes from the Spotify window title, which has no playback position.
-            // The clock starts when the title changes, i.e. when the song started - right as long as you did
-            // not skip into the middle of it (Offset fixes the rest).
-            // The shared TitleClock does the polling, the song-change detection and the pause handling.
-            NowPlaying.Track track = thunder.hack.utility.spotify.TitleClock.current();
-            if (track == null) {
-                status(context, "Nie widzę Spotify - odpal piosenkę w aplikacji Spotify albo zaloguj się (@spotify login)");
-                return;
-            }
-            title = track.title();
-            artist = track.artist();
-            trackId = thunder.hack.utility.spotify.TitleClock.key();
-            duration = thunder.hack.utility.spotify.TitleClock.duration();
-            position = thunder.hack.utility.spotify.TitleClock.position();
-        }
+        long now = System.currentTimeMillis();
+        float dt = lastFrame == 0L ? 0f : Math.min(250f, now - lastFrame);
+        lastFrame = now;
 
-        Lyrics.Track lyrics = Lyrics.get(title, artist, duration);
+        // The text comes live from the small Spotify window the reader keeps open (SpotifyCard): nothing is
+        // downloaded, the line is the one Spotify highlights at this moment.
+        SpotifyCard.State state = SpotifyCard.state();
+        String message = switch (state.status()) {
+            case Unknown -> "Uruchamiam odczyt Spotify...";
+            case NoWindow, NoLyrics -> "Ładuję tekst ze Spotify...";
+            case NoText -> "Spotify nie ma tekstu do tej piosenki";
+            case Intro, Line -> null;
+        };
+        if (message != null) status(context, message);
 
-
-        if (lyrics == null || !lyrics.synced()) {
-            // only the short "searching" hint; when nothing was found the screen simply stays clean
-            if (lyrics == null && Lyrics.unavailable(title, artist))
-                status(context, "Serwer z tekstami (lrclib) nie odpowiada - ponawiam co 10 s");
-            else if (lyrics == null && Lyrics.pending(title, artist))
-                status(context, "Szukam tekstu: " + artist + " - " + title);
-            return;
-        }
-
-        long now = position + offset.getValue();
-        int idx = lyrics.indexAt(now);
-
-        if (idx >= 0) {
-            Lyrics.Line line = lyrics.lines().get(idx);
-            long end = idx + 1 < lyrics.lines().size() ? lyrics.lines().get(idx + 1).atMs() : line.atMs() + 5000L;
-            if (!line.text().isBlank()) {
-                // a new line gets a new random spot in front of you; it stays there for its whole life
-                String key = trackId + "#" + idx;
-                if (!key.equals(anchorKey) || anchor == null) {
-                    anchorKey = key;
-                    anchor = pickSpot();
+        String text = state.status() == SpotifyCard.Status.Line ? clean(state.line()) : "";
+        if (!text.isEmpty()) {
+            if (state.index() != shownIndex || !state.line().equals(shownText)) {
+                // Spotify moved its highlight: this line is confirmed, and the gap since the last confirmation is
+                // how long that line really lasted - the pace is learned from that.
+                learn(state.index(), state.since());
+                shownIndex = state.index();
+                shownText = state.line();
+                confirmedSince = state.since();
+                confirmedSyllables = syllablesOf(text);
+                float clock = Math.max(0f, now - state.since()) + offset.getValue();
+                if (displayIndex == state.index() && line != null) {
+                    // shown ahead of time already: keep it as it is, only line the clock up with Spotify
+                    lineClock = Math.max(lineClock, clock);
+                } else {
+                    displayIndex = state.index();
+                    finished = false;
+                    lineClock = clock;
+                    startLine(text, now);
                 }
-                draw(context, line.text(), anchor, now - line.atMs(), end - line.atMs(), 1f);
-                lastLine = line.text();
-                lastLineStart = line.atMs();
-                lastLineEnd = end;
-                return;
+            } else if (state.playing()) {
+                lineClock += dt;
+                // The next line is known before Spotify highlights it. Once this one is about to run out (at the
+                // learned pace), put the next one up a lead early instead of waiting - otherwise every line would
+                // start late by however long the highlight takes to be seen.
+                String next = clean(state.next());
+                if (displayIndex == shownIndex && line != null && !next.isEmpty()
+                        && lineClock >= line.endMs() - lead.getValue()) {
+                    float into = lineClock - line.endMs();
+                    displayIndex = shownIndex + 1;
+                    finished = false;
+                    startLine(next, now);
+                    lineClock = into;
+                }
             }
+            long position = Math.round(lineClock);
+            if (line != null && !finished && position > line.endMs() + TAIL_MS) {
+                // sung out and the next line is still far off: let it go, and keep it gone
+                retire(now);
+                finished = true;
+            }
+            if (line != null && !finished) reveal(position, now);
+        } else {
+            // intro, a gap between lines, no lyrics: the line on screen goes
+            if (state.status() == SpotifyCard.Status.Line) learn(state.index(), state.since());
+            shownIndex = state.status() == SpotifyCard.Status.Line ? state.index() : -1;
+            shownText = "";
+            confirmedSince = state.since();
+            confirmedSyllables = 0;
+            // a line put up early for a pause that came instead goes too
+            displayIndex = shownIndex;
+            retire(now);
         }
 
-        // an instrumental gap (blank line) - let the previous line fade instead of vanishing
-        long since = now - lastLineEnd;
-        if (!lastLine.isEmpty() && anchor != null && since >= 0 && since < FADE_MS)
-            draw(context, lastLine, anchor, now - lastLineStart, lastLineEnd - lastLineStart, 1f - since / (float) FADE_MS);
+        drawLeaving(context, now);
+        if (line != null) drawLine(context, line, now, 1f, 0f);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Timing                                                              */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Learns how long a syllable lasts from the line that just ended: the real time between Spotify highlighting
+     * it and highlighting the next, over its syllables. A line followed by an instrumental break lasts far longer
+     * than its words and would teach a crawl, so anything well past the current estimate is left out.
+     */
+    private void learn(int nextIndex, long nextSince) {
+        if (shownIndex < 0 || nextIndex != shownIndex + 1 || confirmedSyllables == 0 || confirmedSince == 0L) return;
+        float perSyllable = (nextSince - confirmedSince) / (confirmedSyllables + 1f);
+        if (perSyllable <= 0f || perSyllable > syllableMs * 2.2f) return;
+        syllableMs += (Math.clamp(perSyllable, MIN_SYLLABLE_MS, MAX_SYLLABLE_MS) - syllableMs) * 0.5f;
+    }
+
+    private static String clean(String text) {
+        return text == null ? "" : text.replaceAll("[♪♫]", "").strip();
+    }
+
+    private static int syllablesOf(String text) {
+        int n = 0;
+        for (String t : text.split("\\s+")) if (!t.isEmpty()) n += syllables(t);
+        return n;
     }
 
     /**
-     * A random point in the world inside the current field of view, {@link #distance} blocks out. Turned off
-     * the look direction by up to half the FOV (scaled by {@link #spread}) - less vertically, since the view
-     * is wider than it is tall.
+     * Lays the line out: where it hangs in the world and when each word is sung, in ms from the line's start -
+     * spread by syllables at the pace learned from this song.
+     */
+    private void startLine(String text, long now) {
+        retire(now);
+        String[] tokens = text.split("\s+");
+        List<Word> words = new ArrayList<>(tokens.length);
+        long at = 0;
+        for (String token : tokens) {
+            if (token.isEmpty()) continue;
+            long wordAt = words.isEmpty() ? 0L : Math.max(Math.round(at * syllableMs), words.get(words.size() - 1).atMs + MIN_WORD_MS);
+            words.add(new Word(token, wordAt));
+            at += syllables(token);
+        }
+        if (words.isEmpty()) {
+            line = null;
+            return;
+        }
+        long end = Math.round(at * syllableMs);
+        line = new Line(words, pickSpot(), 0L, end);
+    }
+
+    /** Shows the words whose moment has come. */
+    private void reveal(long position, long now) {
+        List<Word> words = line.words();
+        boolean wholeLine = !wordByWord.getValue();
+        for (Word w : words) {
+            if (w.appearedAt != 0L) continue;
+            long showAt = wholeLine ? line.startMs() : w.atMs - lead.getValue();
+            // the first word is there the moment the line is known, however late that moment is
+            if (!wholeLine && position < showAt && w != words.get(0)) continue;
+            // a frame can arrive after the word was due; age it by that much so the fade-in is not rushed
+            w.appearedAt = now - Math.min((long) IN_MS, Math.max(0L, position - showAt));
+        }
+    }
+
+    /** Sends the line on screen into its fade-out. */
+    private void retire(long now) {
+        if (line == null) return;
+        leaving = line;
+        leavingAt = now;
+        line = null;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Syllables                                                           */
+    /* ------------------------------------------------------------------ */
+
+    private static final String VOWELS = "aeiouyąęóáéíúàèìòùâêîôûäëïöüåæøœ";
+
+    /**
+     * Groups of vowels in the word, at least one. Counting groups rather than vowels is what keeps a softening
+     * Polish "i" ("się", "nie") from making a second syllable. Close enough for English too.
+     */
+    static int syllables(String word) {
+        String w = word.toLowerCase(Locale.ROOT);
+        int count = 0;
+        boolean inVowel = false;
+        for (int i = 0; i < w.length(); i++) {
+            boolean vowel = VOWELS.indexOf(w.charAt(i)) >= 0;
+            if (vowel && !inVowel) count++;
+            inVowel = vowel;
+        }
+        // a trailing "e" in English is usually silent, but erring on the long side keeps words from stacking
+        return Math.max(1, count);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* World placement                                                     */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * A random point in the world inside the current field of view, {@link #distance} blocks out - turned off
+     * the look direction by up to half the FOV (scaled by {@link #spread}), less vertically since the view is
+     * wider than it is tall.
      */
     private Vec3d pickSpot() {
         Vec3d eye = mc.getEntityRenderDispatcher().camera.getCameraPos();
@@ -169,82 +294,118 @@ public class LyricsText extends Module {
         return eye.add(Vec3d.fromPolar(pitch, yaw).multiply(distance.getValue()));
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Drawing                                                             */
+    /* ------------------------------------------------------------------ */
+
+    private void drawLeaving(DrawContext context, long now) {
+        if (leaving == null) return;
+        // the line leaves word by word, left to right, each one a beat after the one before
+        long total = (long) OUT_MS + EXIT_STAGGER_MS * Math.max(0, leaving.words().size() - 1);
+        if (now - leavingAt >= total) {
+            leaving = null;
+            return;
+        }
+        if (!drawLine(context, leaving, now, 1f, 0f, leavingAt)) leaving = null;
+    }
+
+    /** How far apart the words of a finished line start to leave. */
+    private static final long EXIT_STAGGER_MS = 40L;
+
+    private boolean drawLine(DrawContext context, Line l, long now, float fade, float rise) {
+        return drawLine(context, l, now, fade, rise, 0L);
+    }
+
     /**
-     * One line, centred on where its world spot lands on screen. The size never depends on distance - walk
-     * up to it or away from it and the lettering stays exactly as big; only its place on screen moves.
+     * One line, centred on where its world spot lands on screen. The whole line's width is reserved from the
+     * start, so the words that have arrived never shift as the rest come in.
      *
-     * @param elapsed  ms since the line started
-     * @param duration ms until the next line starts
+     * @param fade a whole-line opacity (for the line fading out), {@code rise} how far it has drifted up
+     * @return false once the line is fully faded or no longer in the view
      */
-    private void draw(DrawContext context, String text, Vec3d spot, long elapsed, long duration, float fade) {
-        Vec3d screen = Render3DEngine.worldSpaceToScreenSpace(spot);
-        if (!(screen.z > 0 && screen.z < 1)) return;   // behind you
+    private boolean drawLine(DrawContext context, Line l, long now, float fade, float rise, long exitAt) {
+        if (fade <= 0.01f) return false;
+        Vec3d screen = Render3DEngine.worldSpaceToScreenSpace(l.anchor());
+        if (!(screen.z > 0 && screen.z < 1)) return true;   // behind you
 
         var font = mc.textRenderer;
         float sw = mc.getWindow().getScaledWidth();
+        int space = font.getWidth(" ");
+        int total = -space;
+        for (Word w : l.words()) total += font.getWidth(w.text) + space;
 
         // never wider than the screen: a long line shrinks instead of running off the sides
-        float s = Math.min(scale.getValue(), sw * 0.92f / Math.max(1, font.getWidth(text)));
-        float width = font.getWidth(text) * s;
-        float x = (float) screen.x - width / 2f;
-        float y = (float) screen.y - font.fontHeight * s / 2f;
+        float s = Math.min(scale.getValue(), sw * 0.92f / Math.max(1, total));
+        float x = (float) screen.x - total * s / 2f;
+        float y = (float) screen.y - font.fontHeight * s / 2f - rise;
 
-        // the last bit of every line fades into the next
-        float out = Math.clamp((duration - elapsed) / (float) FADE_MS, 0f, 1f);
-        float alpha = fade * out;
-        if (alpha <= 0.02f) return;
-
-        Anim anim = animation.getValue();
-
-        // The whole line arrives together: it fades up and (Slide) lifts into place, so a new lyric is never
-        // just there from one frame to the next.
-        float enter = anim == Anim.None ? 1f : easeOutCubic(Math.clamp(elapsed / (float) ENTER_MS, 0f, 1f));
-        // ...and it leaves upward as it fades, so the next line takes its place instead of cutting it off.
-        float lineRise = (anim == Anim.Slide ? (1f - enter) * 9f : 0f) + (1f - out) * 7f;
-        float lineScale = anim == Anim.Zoom ? 0.9f + 0.1f * enter : 1f;
-
-        String[] words = text.split(" ");
-        // the words arrive over the first half of the line, so even the last one lands while it is being sung
-        long spread = Math.max(1L, Math.min(duration / 2, 2500L));
-        // the bob runs off the wall clock, not the song: a paused track should not freeze the motion
-        long clock = System.currentTimeMillis();
-
-        var matrices = context.getMatrices();
         float cursor = 0f;
-        for (int i = 0; i < words.length; i++) {
-            String word = i < words.length - 1 ? words[i] + " " : words[i];
-            float wordWidth = font.getWidth(word);
-
-            float reveal = 1f;
-            if (wordByWord.getValue()) {
-                long start = spread * i / words.length;
-                reveal = Math.clamp((elapsed - start) / (float) WORD_MS, 0f, 1f);
-            }
-            if (reveal <= 0f) {
-                cursor += wordWidth;   // not sung yet - its space on the line is still reserved
+        int index = 0;
+        for (Word w : l.words()) {
+            int width = font.getWidth(w.text);
+            // leaving: this word's own exit, a beat after the previous one - it fades, shrinks a little and
+            // drops away, so the line crumbles off instead of vanishing as one block
+            float gone = exitAt == 0L ? 0f
+                    : easeOutCubic(Math.clamp((now - exitAt - index * EXIT_STAGGER_MS) / OUT_MS, 0f, 1f));
+            index++;
+            if (gone >= 0.99f) {
+                cursor += width + space;
                 continue;
             }
-
-            // Zoom pops the word out of nothing with a little overshoot; the others simply fade it up
-            float pop = anim == Anim.Zoom ? 0.7f + 0.3f * easeOutBack(reveal) : 1f;
-            // a word still on its way up from below, when the line arrives one word at a time
-            float rise = wordByWord.getValue() ? (1f - easeOutCubic(reveal)) * 7f : 0f;
-            // the slow bob that keeps a finished line moving - each word a moment behind the one before it
-            float bob = anim == Anim.Wave ? (float) Math.sin(clock / 420.0 + i * 0.85) * 2.4f : 0f;
-
-            int a = Math.round(255 * Math.clamp(alpha * reveal * enter, 0f, 1f));
-            if (a > 4) {
-                // drawn around the word's own centre, so Zoom grows outwards instead of to the right
-                float wordScale = s * lineScale * pop;
-                matrices.pushMatrix();
-                matrices.translate(x + (cursor + wordWidth / 2f) * s, y + lineRise + rise + bob);
-                matrices.scale(wordScale, wordScale);
-                context.drawText(font, word, Math.round(-wordWidth / 2f), 0,
-                        (a << 24) | (colorFor(i) & 0xFFFFFF), shadow.getValue());
-                matrices.popMatrix();
+            if (w.appearedAt != 0L) {
+                // each word pops up into place: fades in, rises from a little below, grows past full size and
+                // settles, with a brief violet glow that dies away once it has landed
+                float raw = Math.clamp((now - w.appearedAt) / (IN_MS * 1.6f), 0f, 1f);
+                float t = easeOutCubic(Math.clamp((now - w.appearedAt) / IN_MS, 0f, 1f));
+                float pop = 0.82f + 0.18f * easeOutBack(raw);
+                float lift = (1f - t) * font.fontHeight * 0.45f * s;
+                float glow = 1f - Math.clamp((now - w.appearedAt) / 520f, 0f, 1f);
+                float drop = gone * font.fontHeight * 0.7f * s;
+                drawWord(context, w.text, x + (cursor + width / 2f) * s, y + font.fontHeight * s / 2f + lift + drop,
+                        s * pop * (1f - 0.15f * gone), t * fade * (1f - gone), glow * glow * fade * (1f - gone));
             }
-            cursor += wordWidth;
+            cursor += width + space;
         }
+        return true;
+    }
+
+    private void drawWord(DrawContext context, String word, float cx, float cy, float s, float alpha, float glow) {
+        int a = Math.round(255 * Math.clamp(alpha, 0f, 1f));
+        if (a <= 4) return;
+        var font = mc.textRenderer;
+        int w = font.getWidth(word);
+
+        var m = context.getMatrices();
+        m.pushMatrix();
+        m.translate(cx, cy);
+        m.scale(s, s);
+        int x = -Math.round(w / 2f), y = -font.fontHeight / 2;
+        if (glow > 0.02f) {
+            // a soft violet halo: the word repeated around itself in two rings, faint and fading
+            int ga = Math.round(70 * glow * Math.clamp(alpha, 0f, 1f));
+            int halo = (ga << 24) | 0xA070FF;
+            for (int r = 1; r <= 2; r++)
+                for (int k = 0; k < 8; k++) {
+                    double ang = Math.PI * k / 4.0;
+                    context.drawText(font, word, x + (int) Math.round(Math.cos(ang) * r), y + (int) Math.round(Math.sin(ang) * r), halo, false);
+                }
+        }
+        if (style.is(Style.Outline)) {
+            int ink = Math.round(a * 0.75f) << 24;
+            for (int ox = -1; ox <= 1; ox++)
+                for (int oy = -1; oy <= 1; oy++)
+                    if (ox != 0 || oy != 0) context.drawText(font, word, x + ox, y + oy, ink, false);
+            context.drawText(font, word, x, y, (a << 24) | 0xFFFFFF, false);
+        } else {
+            context.drawText(font, word, x, y, (a << 24) | 0xFFFFFF, true);
+        }
+        m.popMatrix();
+    }
+
+    /** Overshoots a little past 1 before settling - the pop of a word landing. */
+    private static float easeOutBack(float t) {
+        float c1 = 1.70158f, c3 = c1 + 1f, u = t - 1f;
+        return 1f + c3 * u * u * u + c1 * u * u;
     }
 
     private static float easeOutCubic(float t) {
@@ -252,26 +413,11 @@ public class LyricsText extends Module {
         return 1f - u * u * u;
     }
 
-    /** Overshoots a little past 1 before settling - the snap that makes a word pop instead of appear. */
-    private static float easeOutBack(float t) {
-        float c1 = 1.9f, c3 = c1 + 1f;
-        float u = t - 1f;
-        return 1f + c3 * u * u * u + c1 * u * u;
-    }
-
     private void status(DrawContext context, String text) {
         if (!showStatus.getValue()) return;
         var font = mc.textRenderer;
-        String line = "TextInMinecraft: " + text;
+        String msg = "TextInMinecraft: " + text;
         float sw = mc.getWindow().getScaledWidth();
-        context.drawText(font, line, Math.round((sw - font.getWidth(line)) / 2f), 6, 0xB0FFFFFF, true);
-    }
-
-    private int colorFor(int index) {
-        return switch (colorMode.getValue()) {
-            case White -> 0xFFFFFF;
-            case Sync -> HudEditor.getColor(index * 12).getRGB();
-            case Custom -> color.getValue().getColor();
-        };
+        context.drawText(font, msg, Math.round((sw - font.getWidth(msg)) / 2f), 6, 0xB0FFFFFF, true);
     }
 }

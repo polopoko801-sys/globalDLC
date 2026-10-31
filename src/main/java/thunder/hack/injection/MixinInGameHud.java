@@ -48,9 +48,13 @@ public abstract class MixinInGameHud {
         Managers.NOTIFICATION.onRender2D(context);
     }
 
+    /**
+     * F3 draws later than any open screen, so the client HUD moves up there only while no screen is open -
+     * with an inventory open it stays in render, under the inventory where it belongs.
+     */
     @Unique
     private boolean thunderHack$debugHudVisible() {
-        return mc != null && mc.getDebugHud() != null && mc.getDebugHud().shouldShowDebugHud();
+        return mc != null && mc.currentScreen == null && mc.getDebugHud() != null && mc.getDebugHud().shouldShowDebugHud();
     }
 
     @Inject(at = @At(value = "HEAD"), method = "renderStatusBars", cancellable = true)

@@ -109,30 +109,116 @@ public final class Lyrics {
         });
     }
 
+    /**
+     * lrclib first, NetEase as the fallback: lrclib goes down (503) for hours at a time, and with a single
+     * source that meant no lyrics at all. Only when every source failed on the network is it a failure
+     * (retried later) rather than "this song has no lyrics".
+     */
     private static Track fetch(String title, String artist, long durationMs) throws Exception {
-        String url = "https://lrclib.net/api/get?track_name=" + enc(title) + "&artist_name=" + enc(artist)
+        Track lrclib = EMPTY;
+        Exception lrclibError = null;
+        try {
+            lrclib = fetchLrclib(title, artist, durationMs);
+            if (lrclib.synced()) return lrclib;
+        } catch (Exception e) {
+            lrclibError = e;
+        }
+
+        Track netease;
+        try {
+            netease = fetchNetease(title, artist, durationMs);
+        } catch (Exception e) {
+            if (lrclibError != null) throw lrclibError;
+            return lrclib;
+        }
+        if (netease.synced()) return netease;
+        // lrclib down and NetEase without the song: maybe lrclib has it, so ask again later
+        if (lrclibError != null && !netease.found()) throw lrclibError;
+        return lrclib.found() ? lrclib : netease;
+    }
+
+    /** NetEase Cloud Music: keyless, and its catalogue carries LRC for most western tracks too. */
+    private static Track fetchNetease(String title, String artist, long durationMs) throws Exception {
+        String main = firstArtist(artist);
+        HttpResponse<String> res = request("https://music.163.com/api/search/get?type=1&limit=10&s="
+                + enc((main + " " + clean(title)).strip()));
+        if (res.statusCode() != 200) return EMPTY;
+        var root = JsonParser.parseString(res.body());
+        if (!root.isJsonObject() || !root.getAsJsonObject().has("result")) return EMPTY;
+        var result = root.getAsJsonObject().get("result");
+        if (!result.isJsonObject() || !result.getAsJsonObject().has("songs")) return EMPTY;
+
+        // the first hit by the right artist (and about the right length, when known); else the first hit
+        long pick = -1, fallback = -1;
+        for (var el : result.getAsJsonObject().getAsJsonArray("songs")) {
+            JsonObject song = el.getAsJsonObject();
+            long id = song.get("id").getAsLong();
+            if (fallback < 0) fallback = id;
+            boolean artistOk = main.isBlank();
+            if (song.has("artists"))
+                for (var a : song.getAsJsonArray("artists"))
+                    if (a.getAsJsonObject().get("name").getAsString().equalsIgnoreCase(main)) artistOk = true;
+            long len = song.has("duration") ? song.get("duration").getAsLong() : 0L;
+            boolean lengthOk = durationMs <= 0 || len <= 0 || Math.abs(len - durationMs) < 5000L;
+            if (artistOk && lengthOk) {
+                pick = id;
+                break;
+            }
+        }
+        if (pick < 0) pick = fallback;
+        if (pick < 0) return EMPTY;
+
+        HttpResponse<String> lyr = request("https://music.163.com/api/song/lyric?lv=1&id=" + pick);
+        if (lyr.statusCode() != 200) return EMPTY;
+        JsonObject o = JsonParser.parseString(lyr.body()).getAsJsonObject();
+        if (!o.has("lrc") || !o.get("lrc").isJsonObject()) return EMPTY;
+        JsonObject lrc = o.getAsJsonObject("lrc");
+        if (!lrc.has("lyric") || lrc.get("lyric").isJsonNull()) return EMPTY;
+        List<Line> lines = new ArrayList<>();
+        for (Line l : parseLrc(lrc.get("lyric").getAsString()))
+            // credit lines ("作词 : ...", "Composer : ...") are not lyrics
+            if (!l.text().matches("^[^\\s:：]{1,12}\\s*[:：].*") || l.atMs() > 15_000L) lines.add(l);
+        if (lines.isEmpty()) return EMPTY;
+        return new Track(lines, true, true, durationMs);
+    }
+
+    /**
+     * lrclib, in three passes, each more forgiving than the last - and every candidate scored against the track
+     * that is actually playing.
+     *
+     * <p>Picking the first hit with timestamps is why the words of one song used to crawl over another: a search
+     * for a popular title also returns the live take, the remix, the sped-up version and a cover, and their
+     * timestamps belong to a different recording. So the length is compared first (a live cut is rarely the
+     * same length), then the title and artist, and only then does a hit with timestamps win.
+     */
+    private static Track fetchLrclib(String title, String artist, long durationMs) throws Exception {
+        // 1. the exact endpoint: with the length it narrows to the album version on its own
+        String url = "https://lrclib.net/api/get?track_name=" + enc(clean(title)) + "&artist_name=" + enc(firstArtist(artist))
                 + (durationMs > 0 ? "&duration=" + (durationMs / 1000) : "");
         HttpResponse<String> res = request(url);
         Track exact = res.statusCode() == 200 ? parse(JsonParser.parseString(res.body()).getAsJsonObject()) : EMPTY;
-        if (exact.synced()) return exact;
+        if (exact.synced() && lengthFits(exact, durationMs)) return exact;
 
-        // /api/get wants an exact match, and a window title rarely is one ("Song - Remastered 2011",
-        // "Song (feat. X)", several artists). Search is forgiving: try it with the title cleaned up and take
-        // the first hit that has timestamps.
-        Track found = search(clean(title), firstArtist(artist));
-        if (found.synced()) return found;
+        Track best = EMPTY;
 
-        // last resort: free-text search over "artist title", the most forgiving lrclib offers
-        Track loose = searchQuery(firstArtist(artist) + " " + clean(title));
-        if (loose.synced()) return loose;
+        // 2. title + main artist
+        best = better(best, search(clean(title), firstArtist(artist), title, artist, durationMs));
 
+        // 3. free text, the most forgiving form lrclib offers
+        best = better(best, searchQuery(firstArtist(artist) + " " + clean(title), title, artist, durationMs));
+
+        // 4. title alone: compilations and featured credits often differ in the artist field
+        if (!best.synced())
+            best = better(best, search(clean(title), "", title, artist, durationMs));
+
+        if (best.synced()) return best;
         if (exact.found()) return exact;
-        return found.found() ? found : loose;
+        return best.found() ? best : EMPTY;
     }
 
-    private static Track searchQuery(String query) throws Exception {
+    private static Track searchQuery(String query, String title, String artist, long durationMs) throws Exception {
         HttpResponse<String> res = request("https://lrclib.net/api/search?q=" + enc(query.strip()));
-        return pickFrom(res);
+        return pickFrom(res, title, artist, durationMs);
     }
 
     private static HttpResponse<String> request(String url) throws Exception {
@@ -148,25 +234,127 @@ public final class Lyrics {
         return res;
     }
 
-    private static Track search(String title, String artist) throws Exception {
+    private static Track search(String title, String artist, String wantTitle, String wantArtist, long durationMs) throws Exception {
         HttpResponse<String> res = request("https://lrclib.net/api/search?track_name=" + enc(title)
                 + (artist.isBlank() ? "" : "&artist_name=" + enc(artist)));
-        return pickFrom(res);
+        return pickFrom(res, wantTitle, wantArtist, durationMs);
     }
 
-    /** The first result with timestamps, else the first with plain text, else nothing. */
-    private static Track pickFrom(HttpResponse<String> res) {
+    /** The best-scoring result that carries lyrics, or nothing. */
+    private static Track pickFrom(HttpResponse<String> res, String title, String artist, long durationMs) {
         if (res.statusCode() != 200) return EMPTY;
         var results = JsonParser.parseString(res.body());
         if (!results.isJsonArray()) return EMPTY;
-        Track plain = EMPTY;
+
+        Track best = EMPTY;
+        double bestScore = 0;
         for (var el : results.getAsJsonArray()) {
             if (!el.isJsonObject()) continue;
-            Track t = parse(el.getAsJsonObject());
-            if (t.synced()) return t;
-            if (t.found() && !plain.found()) plain = t;
+            JsonObject o = el.getAsJsonObject();
+            Track t = parse(o);
+            if (!t.found()) continue;
+
+            double score = score(o, title, artist, durationMs, t.synced());
+            if (score <= bestScore) continue;
+            bestScore = score;
+            best = t;
         }
-        return plain;
+        return best;
+    }
+
+    /** The more useful of two answers: a timed one beats a plain one, a found one beats nothing. */
+    private static Track better(Track a, Track b) {
+        if (b.synced()) return b;
+        return !a.found() && b.found() ? b : a;
+    }
+
+    /**
+     * How well one lrclib hit matches the track that is playing. Zero means "a different song".
+     *
+     * <p>The length gate is the important part: a live version, a remix or an extended edit of the same title
+     * would otherwise supply its own timestamps to the studio cut, and the words would drift out of time
+     * exactly as if nothing had been fixed at all.
+     */
+    private static double score(JsonObject o, String title, String artist, long durationMs, boolean synced) {
+        String name = normalize(SpotifyModels.str(o, "trackName"));
+        double titleScore = Math.max(titleMatch(name, normalize(title)), titleMatch(name, normalize(clean(title))));
+        if (titleScore <= 0) return 0;
+
+        double score = titleScore;
+
+        String by = normalize(SpotifyModels.str(o, "artistName"));
+        String wantArtist = normalize(firstArtist(artist));
+        if (!by.isEmpty() && !wantArtist.isEmpty()) {
+            if (by.equals(wantArtist)) score += 1.6;
+            else if (by.contains(wantArtist) || wantArtist.contains(by)) score += 1.0;
+            else if (overlap(by, wantArtist) >= 0.6) score += 0.5;
+        }
+
+        long length = lengthOf(o);
+        if (durationMs > 0 && length > 0) {
+            long diff = Math.abs(length - durationMs);
+            if (diff > 12_000L) return 0;   // a different edit: its timing would not line up
+            score += 1.5 * (1.0 - diff / 12_000.0);
+        }
+
+        return synced ? score + 1.0 : score;
+    }
+
+    private static double titleMatch(String name, String wanted) {
+        if (name.isEmpty() || wanted.isEmpty()) return 0;
+        if (name.equals(wanted)) return 3.0;
+        if (name.contains(wanted) || wanted.contains(name)) return 1.8;
+        return overlap(name, wanted) >= 0.6 ? 0.9 : 0;
+    }
+
+    /** Word overlap of two normalised strings, 0..1. */
+    private static double overlap(String a, String b) {
+        if (a.isEmpty() || b.isEmpty()) return 0;
+        var first = new java.util.HashSet<>(java.util.List.of(a.split(" ")));
+        var second = new java.util.HashSet<>(java.util.List.of(b.split(" ")));
+        var common = new java.util.HashSet<>(first);
+        common.retainAll(second);
+        return common.size() / (double) Math.max(first.size(), second.size());
+    }
+
+    private static String normalize(String text) {
+        if (text == null) return "";
+        return normalized(text);
+    }
+
+    /**
+     * Lower case, letters and digits only, single spaces between words - so a title written with a dash,
+     * brackets or a stray full stop normalises to the same key as the plain one. Written out rather than as
+     * a regex so that a curly quote or a Polish letter can never fall outside the class.
+     */
+    private static String normalized(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        boolean space = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (Character.isLetterOrDigit(c)) {
+                out.append(Character.toLowerCase(c));
+                space = false;
+            } else if (!space && out.length() > 0) {
+                out.append(' ');
+                space = true;
+            }
+        }
+        return out.toString().strip();
+    }
+
+    private static long lengthOf(JsonObject o) {
+        if (!o.has("duration") || o.get("duration").isJsonNull()) return 0L;
+        try {
+            return (long) (o.get("duration").getAsDouble() * 1000.0);
+        } catch (RuntimeException e) {
+            return 0L;
+        }
+    }
+
+    /** Whether a hit's own length is close enough to the playing track's to use its timestamps. */
+    private static boolean lengthFits(Track track, long durationMs) {
+        return durationMs <= 0 || track.durationMs() <= 0 || Math.abs(track.durationMs() - durationMs) <= 12_000L;
     }
 
     /** Drops the decorations a player adds to a title: "(feat. X)", "[Live]", " - Remastered 2011". */
@@ -213,6 +401,8 @@ public final class Lyrics {
             } catch (NumberFormatException ignored) {
             }
         }
+        // not every file is written in order, and everything downstream walks the list front to back
+        out.sort(java.util.Comparator.comparingLong(Line::atMs));
         return out;
     }
 

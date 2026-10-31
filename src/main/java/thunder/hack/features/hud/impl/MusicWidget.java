@@ -270,7 +270,7 @@ public class MusicWidget extends HudElement {
             Render2DEngine.drawRoundedBlur(context, left, top, width, height, 12f,
                     HudEditor.blurColor.getValue().getColorObject());
         } else {
-            Render2DEngine.drawRound(context, left, top, width, height, 12f, plateColor.getValue().getColorObject());
+            Render2DEngine.drawRoundSmooth(context, left, top, width, height, 12f, plateColor.getValue().getColorObject());
         }
 
         if (wide) drawWide(context, view, left, top, width);
@@ -339,8 +339,8 @@ public class MusicWidget extends HudElement {
 
             float barX = l + elapsedW + 6f, barW = Math.max(8f, (r - totalW - 6f) - barX), barY = rowY + 3f;
             float fraction = view.duration() > 0 ? Math.clamp(view.position() / (float) view.duration(), 0f, 1f) : 0f;
-            Render2DEngine.drawRound(context, barX, barY, barW, 2f, 1f, new Color(255, 255, 255, 45));
-            Render2DEngine.drawRound(context, barX, barY, barW * fraction, 2f, 1f, accent);
+            Render2DEngine.drawRoundSmooth(context, barX, barY, barW, 2f, 1f, new Color(255, 255, 255, 45));
+            Render2DEngine.drawRoundSmooth(context, barX, barY, barW * fraction, 2f, 1f, accent);
         }
 
         if (!controls.getValue()) return;
@@ -473,20 +473,20 @@ public class MusicWidget extends HudElement {
         if (!total.isEmpty())
             text(context, FontRenderers.sf_medium_mini, total, barRight + 6f, y + 1f, new Color(0x9A9AA5).getRGB());
 
-        Render2DEngine.drawRound(context, barLeft, y, barWidth, 2.5f, 1.25f, new Color(0x40FFFFFF, true));
+        Render2DEngine.drawRoundSmooth(context, barLeft, y, barWidth, 2.5f, 1.25f, new Color(0x40FFFFFF, true));
 
         float fraction = view.durationKnown()
                 ? (view.duration() <= 0 ? 0f : Math.clamp(position / (float) view.duration(), 0f, 1f))
                 : Math.min(1f, position / 300_000f);
 
         if (view.available() && fraction > 0)
-            Render2DEngine.drawRound(context, barLeft, y, barWidth * fraction, 2.5f, 1.25f, accent);
+            Render2DEngine.drawRoundSmooth(context, barLeft, y, barWidth * fraction, 2.5f, 1.25f, accent);
 
         if (!view.live() || !view.durationKnown()) return;
 
         // The handle only exists where seeking is real, so a bar you cannot drag never grows a grip.
         float handleX = barLeft + barWidth * fraction;
-        Render2DEngine.drawRound(context, handleX - 2f, y - 1.75f, 4f, 6f, 2f, Color.WHITE);
+        Render2DEngine.drawRoundSmooth(context, handleX - 2f, y - 1.75f, 4f, 6f, 2f, Color.WHITE);
 
         seekLeft = barLeft;
         seekWidth = barWidth;
@@ -574,10 +574,10 @@ public class MusicWidget extends HudElement {
         boolean knowsVolume = view.volume() >= 0;
         float level = knowsVolume ? view.volume() / 100f : 0f;
 
-        Render2DEngine.drawRound(context, x, sliderY, sliderWidth, 2.5f, 1.25f, new Color(0x40FFFFFF, true));
+        Render2DEngine.drawRoundSmooth(context, x, sliderY, sliderWidth, 2.5f, 1.25f, new Color(0x40FFFFFF, true));
         if (knowsVolume) {
-            Render2DEngine.drawRound(context, x, sliderY, sliderWidth * level, 2.5f, 1.25f, idle);
-            Render2DEngine.drawRound(context, x + sliderWidth * level - 2f, sliderY - 1.75f, 4f, 6f, 2f, Color.WHITE);
+            Render2DEngine.drawRoundSmooth(context, x, sliderY, sliderWidth * level, 2.5f, 1.25f, idle);
+            Render2DEngine.drawRoundSmooth(context, x + sliderWidth * level - 2f, sliderY - 1.75f, 4f, 6f, 2f, Color.WHITE);
 
             volumeLeft = x;
             volumeWidth = sliderWidth;
@@ -642,7 +642,7 @@ public class MusicWidget extends HudElement {
             return;
         }
 
-        Render2DEngine.drawRound(context, x, y, size, size, radius,
+        Render2DEngine.drawRoundSmooth(context, x, y, size, size, radius,
                 view.available() ? coverColor(view) : new Color(58, 58, 66));
 
         float glyph = size * 0.5f;
@@ -758,9 +758,14 @@ public class MusicWidget extends HudElement {
             read();
         }
 
-        Identifier cover = fallbackAvailable && showCover.getValue() && artwork.getValue()
-                ? thunder.hack.utility.CoverArt.of(fallbackArtist, fallbackTitle)
-                : null;
+        // The exact cover Spotify shows for this track when its web player can be read; searching iTunes and
+        // Deezer by artist and title is only the fallback - it misses remixes and smaller artists.
+        Identifier cover = null;
+        if (fallbackAvailable && showCover.getValue() && artwork.getValue()) {
+            String exact = thunder.hack.utility.spotify.SpotifyCard.coverUrl(fallbackTitle);
+            cover = exact != null ? SpotifyArt.of(exact) : null;
+            if (cover == null) cover = thunder.hack.utility.CoverArt.of(fallbackArtist, fallbackTitle);
+        }
 
         // The window title has no position and no length: the shared TitleClock supplies the position (and
         // pauses with Spotify), lrclib the length - so the progress bar works without a login too.
@@ -779,9 +784,9 @@ public class MusicWidget extends HudElement {
                 cover,
                 length > 0 ? Math.min(position, length) : position,
                 length, length > 0,
-                // A window title does not say whether it is paused, and a title that is still there is
-                // very nearly always still playing - so the play icon follows "there is a track".
-                fallbackAvailable, false, false,
+                // Spotify's own player bar says whether it is paused; for anything else a title that is still
+                // there is very nearly always still playing, so the icon follows "there is a track".
+                fallbackAvailable && (!fromSpotifyWindow || thunder.hack.utility.spotify.TitleClock.playing()), false, false,
                 false, Repeat.off, -1,
                 "", true, "");
     }

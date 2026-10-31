@@ -304,6 +304,7 @@ public class ModuleManager implements IManager {
     public static ChunkAnalyzer chunkAnalyzer = new ChunkAnalyzer();
     public static MusicWidget musicWidget = new MusicWidget();
     public static LyricsText lyricsText = new LyricsText();
+    public static thunder.hack.features.modules.misc.LearnAI learnAI = new thunder.hack.features.modules.misc.LearnAI();
     public static VoidRings voidRings = new VoidRings();
     public static GroundSigil groundSigil = new GroundSigil();
     public static CustomSky customSky = new CustomSky();
@@ -426,6 +427,10 @@ public class ModuleManager implements IManager {
         ModuleManager.aimCamera.frame();
         thunder.hack.utility.render.core.CloudanRenderCore.endFrame2D(context);
         ThunderHack.core.onRender2D(context);
+        // GUI drawing is deferred and batched since 1.21.6: our trails, ESP and text shared a layer with the
+        // open inventory, and the batching could draw them over it. A new root layer here puts everything the
+        // screen draws after this strictly on top.
+        if (mc.currentScreen != null) context.createNewRootLayer();
     }
 
     public void onRender3D(MatrixStack stack) {

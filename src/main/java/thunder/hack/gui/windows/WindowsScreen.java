@@ -1,18 +1,9 @@
 package thunder.hack.gui.windows;
 
-import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
-import thunder.hack.gui.clickui.ClickGUI;
-import thunder.hack.features.modules.Module;
-import thunder.hack.features.modules.client.HudEditor;
-import thunder.hack.utility.render.Render2DEngine;
-import thunder.hack.utility.render.TextureStorage;
 
-import java.awt.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -23,7 +14,6 @@ public class WindowsScreen extends Screen {
     private List<WindowBase> windows = new ArrayList<>();
     public static WindowBase lastClickedWindow;
     public static WindowBase draggingWindow;
-    private static final Identifier clickGuiIcon = Identifier.of("gombal", "textures/gui/elements/clickgui.png");
 
     public WindowsScreen(WindowBase... windows) {
         super(Text.of("THWindows"));
@@ -42,38 +32,8 @@ public class WindowsScreen extends Screen {
         // fresh snapshot of what is behind the screen so the glass windows have a backdrop to blur
         thunder.hack.utility.render.ScreenCapture.captureFrame();
 
-        DrawContext matrices = context;
-        int i = mc.getWindow().getScaledWidth() / 2;
-
-        float offset = (windows.size() * 20f) / -2f - 23;
-
-        // the dock is a liquid-glass slab too - same recipe as the windows, its highlight following the
-        // cursor, so the whole shell reads as one material
-        Render2DEngine.drawBlurredShadow(matrices, i + offset - 1.5f, mc.getWindow().getScaledHeight() - 24, windows.size() * 20f + 23f, 19, 14, new Color(0, 0, 0, 130));
-        WindowBase.glassPanel(matrices, i + offset - 1.5f, mc.getWindow().getScaledHeight() - 25, windows.size() * 20f + 23f, 19, 5f, mouseX, mouseY);
-
-        thunder.hack.utility.render.RSCompat.enableBlend();
-        thunder.hack.utility.render.RSCompat.defaultBlendFunc();
-        thunder.hack.utility.render.RSCompat.setShaderColor(1f, 1f, 1f, Render2DEngine.isHovered(mouseX, mouseY, (i + offset) + 1, mc.getWindow().getScaledHeight() - 23, 15, 15) ? 0.95f : 0.7f);
-        context.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, clickGuiIcon, (int) (i + offset) + 1, mc.getWindow().getScaledHeight() - 23, 15, 15, 0, 0, 15, 15, 15, 15);
-        thunder.hack.utility.render.RSCompat.setShaderColor(1f, 1f, 1f, 1f);
-        thunder.hack.utility.render.RSCompat.disableBlend();
-
-        Render2DEngine.drawLine(context, i + offset + 20, mc.getWindow().getScaledHeight() - 23, i + offset + 20, mc.getWindow().getScaledHeight() - 9, Render2DEngine.injectAlpha(WindowBase.TH_ACCENT, 120).getRGB());
-
-        offset += 23;
-        for (WindowBase w : windows) {
-            Color c = Render2DEngine.isHovered(mouseX, mouseY, i + offset, mc.getWindow().getScaledHeight() - 24, 17, 17) ? WindowBase.TH_HEADER :
-                    !w.isVisible() ? new Color(30, 31, 41) : Render2DEngine.injectAlpha(WindowBase.TH_ACCENT, 70);
-            Render2DEngine.drawRound(matrices, i + offset, mc.getWindow().getScaledHeight() - 24, 17, 17, 4f, c);
-            thunder.hack.utility.render.RSCompat.enableBlend();
-            thunder.hack.utility.render.RSCompat.noop();
-            thunder.hack.utility.render.RSCompat.setShaderColor(1f, 1f, 1f, Render2DEngine.isHovered(mouseX, mouseY, (i + offset) + 1, mc.getWindow().getScaledHeight() - 23, 15, 15) ? 0.95f : 0.7f);
-            context.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, w.getIcon() != null ? w.getIcon() : TextureStorage.configIcon, (int) (i + offset) + 3, mc.getWindow().getScaledHeight() - 21, 11, 11, 0, 0, 11, 11, 11, 11);
-            thunder.hack.utility.render.RSCompat.setShaderColor(1f, 1f, 1f, 1f);
-            thunder.hack.utility.render.RSCompat.disableBlend();
-            offset += 20f;
-        }
+        // The bottom dock (ClickGUI + window buttons) used to hang under every window; it covered the
+        // lower edge of the screen and is gone. Windows are still toggled from the ClickGUI sidebar.
 
         windows.stream().filter(WindowBase::isVisible).forEach(w -> {
             if (w != lastClickedWindow)
@@ -95,25 +55,6 @@ public class WindowsScreen extends Screen {
         @Override
         public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean doubled) {
         double mouseX = click.x(); double mouseY = click.y(); int button = click.button();
-
-        int i = mc.getWindow().getScaledWidth() / 2;
-        float offset = (windows.size() * 20f) / -2f - 23;
-
-        if (Render2DEngine.isHovered(mouseX, mouseY, (i + offset) + 1, mc.getWindow().getScaledHeight() - 23, 15, 15)) {
-            mc.setScreen(ClickGUI.getClickGui());
-            return true;
-        }
-
-        offset += 23;
-        for (WindowBase w : windows) {
-            if (Render2DEngine.isHovered(mouseX, mouseY, i + offset, mc.getWindow().getScaledHeight() - 24, 17, 17)) {
-                w.setVisible(!w.isVisible());
-                if (w.isVisible())
-                    lastClickedWindow = w;
-                return true;
-            }
-            offset += 20f;
-        }
 
         // only the window under the cursor takes the click. Handing it to every window let one
         // sitting underneath steal the keyboard focus (or start dragging along with the top one).

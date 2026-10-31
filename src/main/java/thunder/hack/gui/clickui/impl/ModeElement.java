@@ -65,14 +65,53 @@ public class ModeElement extends AbstractElement {
         } else
             FontRenderers.sf_medium_mini.drawString(matrixStack, setting2.currentEnumName(), (x + width - 18 - FontRenderers.sf_medium_mini.getStringWidth(setting.currentEnumName())), 3 + (y + wheight / 2 - 3f), new Color(-1).getRGB());
 
-        if (open) {
+        // The list unrolls: the row grows (see listHeight), each mode slides and fades in a beat after the one
+        // above, and the accent pill behind the chosen mode glides to a new choice instead of jumping.
+        float amount = openAmount();
+        if (amount > 0.01f) {
             Color color = HudEditor.getColor(0);
-            double offsetY = 0;
-            for (int i = 0; i <= setting2.getModes().length - 1; i++) {
-                FontRenderers.sf_medium_mini.drawString(matrixStack, setting2.getModes()[i], x + width / 2f - (FontRenderers.sf_medium_mini.getStringWidth(setting2.getModes()[i]) / 2f), (y + wheight + 2 + offsetY), setting2.currentEnumName().equalsIgnoreCase(setting2.getModes()[i]) ? color.getRGB() : new Color(-1).getRGB());
-                offsetY += 12;
+            String[] modes = setting2.getModes();
+            int chosen = 0;
+            for (int i = 0; i < modes.length; i++) if (setting2.currentEnumName().equalsIgnoreCase(modes[i])) chosen = i;
+            pillY = pillY < 0f ? chosen : pillY + (chosen - pillY) * 0.25f;
+
+            float visible = listHeight();
+            float pillTop = (float) (y + wheight + pillY * 12f);
+            if (pillY * 12f + 11f <= visible + 1f)
+                Render2DEngine.drawRound(context, x + 6f, pillTop, width - 12f, 11f, 3f,
+                        Render2DEngine.injectAlpha(color, Math.round(55 * amount)));
+
+            for (int i = 0; i < modes.length; i++) {
+                if (i * 12f + 10f > visible) break;
+                float item = Math.clamp((amount * (modes.length + 2f) - i) / 3f, 0f, 1f);
+                if (item <= 0.02f) continue;
+                int a = Math.round(255 * item);
+                int c = i == chosen ? Render2DEngine.injectAlpha(color, a).getRGB() : new Color(255, 255, 255, a).getRGB();
+                float tx2 = x + width / 2f - FontRenderers.sf_medium_mini.getStringWidth(modes[i]) / 2f - (1f - item) * 8f;
+                FontRenderers.sf_medium_mini.drawString(matrixStack, modes[i], tx2, (float) (y + wheight + 2 + i * 12), c);
             }
         }
+    }
+
+    /** Eased position of the highlight behind the chosen mode, in rows. */
+    private float pillY = -1f;
+    /** Open/close animation: where it started from and when. */
+    private float fromAmount;
+    private long toggledAt;
+    private static final float OPEN_MS = 240f;
+
+    /** How far the list is unrolled, 0..1, eased - and picking up from wherever it was if toggled mid-way. */
+    public float openAmount() {
+        float t = Math.clamp((System.currentTimeMillis() - toggledAt) / OPEN_MS, 0f, 1f);
+        float u = 1f - t;
+        float e = 1f - u * u * u;
+        float target = open ? 1f : 0f;
+        return fromAmount + (target - fromAmount) * e;
+    }
+
+    /** The height the unrolled part takes right now - the panel lays the row out with this. */
+    public float listHeight() {
+        return setting2.getModes().length * 12f * openAmount();
     }
 
     @Override
@@ -84,6 +123,8 @@ public class ModeElement extends AbstractElement {
                 setting2.increaseEnum();
                 Managers.SOUND.playBoolean();
             } else {
+                fromAmount = openAmount();
+                toggledAt = System.currentTimeMillis();
                 open = !open;
                 if (open) {
                     Managers.SOUND.playSwipeIn();

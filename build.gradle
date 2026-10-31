@@ -119,3 +119,71 @@ publishing {
 	repositories {
 	}
 }
+
+// After every build the fresh client goes straight into the Modrinth profile ("Fabric 1.21.11"), replacing the
+// copy that is there. The installed jar carries a licence stamped in by the desktop app (uid.txt and the app
+// address) - those entries are carried over from it, so the new build keeps the same UID and stays activated.
+// Skipped quietly when there is no such profile; -PnoInstall turns it off for one build.
+tasks.register('installModrinth') {
+	dependsOn remapJar
+	onlyIf { !project.hasProperty('noInstall') }
+	doLast {
+		def mods = new File(System.getenv('APPDATA') ?: '', 'ModrinthApp/profiles/Fabric 1.21.11/mods')
+		if (!mods.isDirectory()) {
+			logger.lifecycle("installModrinth: no Modrinth profile at ${mods}, skipped")
+			return
+		}
+		def built = remapJar.archiveFile.get().asFile
+		def stamp = ['uid.txt', 'gombal_app_address.txt']
+		def ours = (mods.listFiles() ?: []).findAll { it.name.startsWith('GlobalDLC') && it.name.endsWith('.jar') }
+
+		// the licence of the installed copy - or, when none carries one, of the newest update the desktop app
+		// stamped (Desktop/GlobalDLC-update-*/GlobalDLC-*.jar)
+		Map<String, byte[]> kept = [:]
+		def licensed = { File f -> new java.util.zip.ZipFile(f).withCloseable { z -> z.getEntry('uid.txt') != null } }
+		def source = ours.find(licensed)
+		def licenceFrom = source
+		if (licenceFrom == null) {
+			def desktop = new File(System.getProperty('user.home'), 'Desktop')
+			licenceFrom = (desktop.listFiles() ?: [])
+					.findAll { it.isDirectory() && it.name.startsWith('GlobalDLC-update-') }
+					.collectMany { (it.listFiles() ?: []).findAll { j -> j.name.startsWith('GlobalDLC') && j.name.endsWith('.jar') } }
+					.sort { -it.lastModified() }
+					.find(licensed)
+		}
+		if (licenceFrom != null) {
+			new java.util.zip.ZipFile(licenceFrom).withCloseable { z ->
+				stamp.each { n -> def e = z.getEntry(n); if (e != null) kept[n] = z.getInputStream(e).bytes }
+			}
+		}
+
+		def target = new File(mods, licenceFrom?.name ?: 'GlobalDLC.jar')
+		def temp = new File(mods, target.name + '.tmp')
+		new java.util.zip.ZipFile(built).withCloseable { z ->
+			new java.util.zip.ZipOutputStream(new FileOutputStream(temp)).withCloseable { out ->
+				z.entries().each { e ->
+					if (e.name in stamp || e.name == 'uid_avatar.png') return
+					out.putNextEntry(new java.util.zip.ZipEntry(e.name))
+					if (!e.directory) z.getInputStream(e).withCloseable { it.transferTo(out) }
+					out.closeEntry()
+				}
+				kept.each { n, bytes ->
+					out.putNextEntry(new java.util.zip.ZipEntry(n))
+					out.write(bytes)
+					out.closeEntry()
+				}
+			}
+		}
+
+		// two copies of the mod in one folder is a duplicate mod id - every other copy of ours goes
+		ours.findAll { it != target }.each { it.delete() }
+		try {
+			java.nio.file.Files.move(temp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+		} catch (Exception e) {
+			temp.delete()
+			throw new GradleException("installModrinth: cannot replace ${target.name} - close the game and build again (${e.message})")
+		}
+		logger.lifecycle("installModrinth: ${target.name} updated" + (kept.isEmpty() ? ' (no licence found to carry over)' : ' (licence kept)'))
+	}
+}
+tasks.named('build') { finalizedBy 'installModrinth' }

@@ -1127,6 +1127,14 @@ public class Render3DEngine {
         renderGhosts(espLength, factor, shaking, amplitude, target, GhostStyle.Orbit);
     }
 
+    /** One camera-facing glow sprite of the given half-size, centred on the matrix origin. */
+    private static void ghostSprite(VertexConsumer buffer, Matrix4f matrix, float s, int color) {
+        Render3DUtil.vertexTex(buffer, matrix, -s, s, 0, 0f, 1f, color);
+        Render3DUtil.vertexTex(buffer, matrix, s, s, 0, 1f, 1f, color);
+        Render3DUtil.vertexTex(buffer, matrix, s, -s, 0, 1f, 0f, color);
+        Render3DUtil.vertexTex(buffer, matrix, -s, -s, 0, 0f, 0f, color);
+    }
+
     public static void renderGhosts(int espLength, int factor, float shaking, float amplitude, Entity target, GhostStyle style) {
         Camera camera = mc.gameRenderer.getCamera();
 
@@ -1200,13 +1208,15 @@ public class Render3DEngine {
                 matrices.multiply(yawRotInv);
                 matrices.multiply(pitchRot);
                 Matrix4f matrix = matrices.peek().getPositionMatrix();
-                int color = Render2DEngine.applyOpacity(HudEditor.getColor((int) (180 * offset)), offset).getRGB();
+                java.awt.Color base = HudEditor.getColor((int) (180 * offset));
                 // larger than the old disc: most of ghostGlow is soft halo, and the halos must overlap
                 float scale = Math.max(0.24f * (offset), 0.2f) * 1.7f;
-                Render3DUtil.vertexTex(buffer, matrix, -scale, scale, 0, 0f, 1f, color);
-                Render3DUtil.vertexTex(buffer, matrix, scale, scale, 0, 1f, 1f, color);
-                Render3DUtil.vertexTex(buffer, matrix, scale, -scale, 0, 1f, 0f, color);
-                Render3DUtil.vertexTex(buffer, matrix, -scale, -scale, 0, 0f, 0f, color);
+                // Three layers per soul, so the trail glows instead of just being drawn: a wide faint bloom that
+                // melts the whole streak into one light, the coloured body, and a small near-white hot core.
+                ghostSprite(buffer, matrix, scale * 2.6f, Render2DEngine.applyOpacity(base, offset * 0.32f).getRGB());
+                ghostSprite(buffer, matrix, scale, Render2DEngine.applyOpacity(base, offset).getRGB());
+                java.awt.Color hot = Render2DEngine.interpolateColorC(base, java.awt.Color.WHITE, 0.6f);
+                ghostSprite(buffer, matrix, scale * 0.42f, Render2DEngine.applyOpacity(hot, Math.min(1f, offset * 1.1f)).getRGB());
                 matrices.pop();
             }
         }

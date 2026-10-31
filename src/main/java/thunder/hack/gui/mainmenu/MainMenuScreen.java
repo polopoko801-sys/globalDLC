@@ -253,22 +253,57 @@ public class MainMenuScreen extends Screen {
             return;
         }
 
+        // A pane of the same glass as the rest of the menu: an icon of a little gallery and the label, lifting
+        // and brightening under the cursor, with a thin accent line growing out of its centre.
         String label = "Customize";
         float textWidth = FontRenderers.sf_medium.getStringWidth(label);
-        float boxW = textWidth + 30f, boxH = 22f;
+        float icon = 11f;
+        float boxW = textWidth + icon + 40f, boxH = 26f;
         float x = cx - boxW / 2f;
 
         boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, x, y, boxW, boxH);
         customizeRect = new float[]{x, y, boxW, boxH};
+        long now = System.currentTimeMillis();
+        float step = customizeFrame == 0L ? 16f : Math.min(100f, now - customizeFrame);
+        customizeFrame = now;
+        customizeHover = thunder.hack.utility.render.core.CloudanAnimationEngine.approach(customizeHover, hovered ? 1f : 0f, 70f, step);
+        float lift = customizeHover;
 
-        Render2DEngine.drawBlurredShadow(context, x, y, boxW, boxH, 8,
-                new Color(0, 0, 0, Math.round(70 * alpha)));
-        Render2DEngine.drawRound(context, x, y, boxW, boxH, boxH / 2f,
-                new Color(28, 28, 34, Math.round((hovered ? 170 : 120) * alpha)));
+        var matrices = context.getMatrices();
+        matrices.pushMatrix();
+        float grow = 1f + 0.04f * lift;
+        matrices.translate(cx, y + boxH / 2f);
+        matrices.scale(grow, grow);
+        matrices.translate(-cx, -(y + boxH / 2f));
 
-        FontRenderers.sf_medium.drawString(context, label, cx - textWidth / 2f, y + 6f,
-                new Color(255, 255, 255, Math.round((hovered ? 255 : 220) * alpha)).getRGB());
+        Render2DEngine.drawRound(context, x - 2f, y + 1f, boxW + 4f, boxH + 4f, boxH / 2f + 2f,
+                new Color(0, 0, 0, Math.round((45 + 35 * lift) * alpha)));
+        MenuGlass.draw(context, x, y, boxW, boxH, boxH / 2f, alpha, lift);
+
+        Color accent = thunder.hack.features.modules.client.HudEditor.getColor(0);
+        int ink = new Color(255, 255, 255, Math.round((215 + 40 * lift) * alpha)).getRGB();
+
+        // the icon: a 2x2 grid of little rounded tiles, the top-left one in the accent colour
+        float ix = x + 15f, iy = y + (boxH - icon) / 2f, tile = (icon - 2f) / 2f;
+        for (int i = 0; i < 4; i++) {
+            float tx = ix + (i % 2) * (tile + 2f), ty = iy + (i / 2) * (tile + 2f);
+            Color c = i == 0 ? Render2DEngine.injectAlpha(accent, Math.round(255 * alpha)) : new Color(ink, true);
+            Render2DEngine.drawRound(context, tx, ty, tile, tile, 1.5f, c);
+        }
+
+        FontRenderers.sf_medium.drawString(context, label, ix + icon + 8f, y + 8.5f, ink);
+
+        // accent underline, growing from the middle on hover
+        float lineW = (boxW - boxH) * lift;
+        if (lineW > 1f)
+            Render2DEngine.drawRound(context, cx - lineW / 2f, y + boxH - 2.5f, lineW, 1.5f, 0.75f,
+                    Render2DEngine.injectAlpha(accent, Math.round(220 * alpha * lift)));
+
+        matrices.popMatrix();
     }
+
+    private float customizeHover;
+    private long customizeFrame;
 
     /* ------------------------------------------------------------------ */
     /* Responsive sizing                                                   */

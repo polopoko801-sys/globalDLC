@@ -39,6 +39,13 @@ public class MixinClientPlayNetworkHandler {
 
         if(Module.fullNullCheck()) return;
 
+        // "ai ..." is an order for the LearnAI experiment, not a chat message
+        if (message.toLowerCase(java.util.Locale.ROOT).startsWith("ai ")) {
+            ModuleManager.learnAI.onChat(message.substring(3));
+            ci.cancel();
+            return;
+        }
+
         // Niektóre serwery/auth-pluginy przyjmują "/login haslo" jako zwykłą wiadomość — łap też tutaj.
         // Wiadomość trafia tu z wiodącym "/", więc obcinamy go przed rozbiorem komendy.
         if (message.startsWith("/"))

@@ -151,9 +151,7 @@ public class ModuleButton extends AbstractButton {
 
                 if (element instanceof ModeElement combobox) {
                     combobox.setWHeight(13);
-                    if (combobox.isOpen()) {
-                        element.setHeight(13 + (combobox.getSetting().getModes().length * 12));
-                    } else element.setHeight(13);
+                    element.setHeight(13 + combobox.listHeight());
                 }
                 offsetY += element.getHeight();
             }

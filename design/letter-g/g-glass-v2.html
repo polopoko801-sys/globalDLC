@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>g — liquid glass v2</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #06040c; }
+  body {
+    display: grid; place-items: center;
+    background:
+      radial-gradient(70vmin 60vmin at 42% 30%, rgba(150,110,255,.28), transparent 62%),
+      radial-gradient(60vmin 50vmin at 70% 70%, rgba(90,40,180,.20), transparent 65%),
+      radial-gradient(120vmin 120vmin at 50% 45%, #22112f 0%, #150a22 45%, #0a0512 78%, #050309 100%);
+  }
+  svg { width: min(100vmin, 940px); height: auto; display: block; }
+</style>
+</head>
+<body>
+<svg id="art" viewBox="0 0 900 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="face" x1="12%" y1="2%" x2="88%" y2="98%">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="10%"  stop-color="#f6efff"/>
+      <stop offset="26%"  stop-color="#d8c6ff"/>
+      <stop offset="44%"  stop-color="#b196f3"/>
+      <stop offset="62%"  stop-color="#8863dd"/>
+      <stop offset="78%"  stop-color="#5d35b8"/>
+      <stop offset="91%"  stop-color="#3a1a80"/>
+      <stop offset="100%" stop-color="#230c4e"/>
+    </linearGradient>
+
+    <linearGradient id="side" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#7a4fe0"/>
+      <stop offset="55%"  stop-color="#3d1c86"/>
+      <stop offset="100%" stop-color="#180736"/>
+    </linearGradient>
+
+    <linearGradient id="rim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="30%"  stop-color="#e9dcff" stop-opacity=".75"/>
+      <stop offset="55%"  stop-color="#9d78ea" stop-opacity=".25"/>
+      <stop offset="78%"  stop-color="#ffffff" stop-opacity=".35"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity=".85"/>
+    </linearGradient>
+
+    <linearGradient id="chrome" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="34%"  stop-color="#ffffff" stop-opacity=".22"/>
+      <stop offset="46%"  stop-color="#ffffff" stop-opacity=".78"/>
+      <stop offset="52%"  stop-color="#ffffff" stop-opacity=".95"/>
+      <stop offset="60%"  stop-color="#e6d6ff" stop-opacity=".35"/>
+      <stop offset="72%"  stop-color="#120726" stop-opacity=".35"/>
+      <stop offset="100%" stop-color="#120726" stop-opacity="0"/>
+    </linearGradient>
+
+    <radialGradient id="hot" cx="32%" cy="24%" r="48%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity=".95"/>
+      <stop offset="45%"  stop-color="#efe4ff" stop-opacity=".35"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="floor" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#000000" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- the frosted light that only touches the top of the object -->
+    <linearGradient id="topFade" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#fff" stop-opacity="1"/>
+      <stop offset="42%"  stop-color="#fff" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="topLight"><rect x="0" y="120" width="900" height="420" fill="url(#topFade)"/></mask>
+
+    <filter id="bloom" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="26" result="b"/>
+      <feColorMatrix in="b" type="matrix"
+        values="0.58 0 0 0 0.20  0 0.30 0 0 0.05  0 0 0.95 0 0.62  0 0 0 0.9 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <filter id="blur6" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="blur2" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2"/></filter>
+    <filter id="blur1" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation=".9"/></filter>
+
+    <!-- glass bevel: a crisp specular edge lit from the upper left -->
+    <filter id="bevel" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2.2" result="b"/>
+      <feSpecularLighting in="b" surfaceScale="7" specularConstant="1.25" specularExponent="26"
+                          lighting-color="#ffffff" result="spec">
+        <fePointLight x="-140" y="-190" z="300"/>
+      </feSpecularLighting>
+      <feComposite in="spec" in2="SourceAlpha" operator="in" result="specIn"/>
+      <feMerge><feMergeNode in="specIn"/></feMerge>
+    </filter>
+
+    <!-- refraction: the backdrop seen slightly bent through the glass -->
+    <filter id="refract" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.010" numOctaves="2" seed="11" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="14" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+
+    <filter id="grain">
+      <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="3" seed="4"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.13"/></feComponentTransfer>
+    </filter>
+
+    <text id="glyph" x="450" y="600" text-anchor="middle"
+          font-family="'Segoe UI Black','Arial Black',system-ui,sans-serif"
+          font-weight="900" font-size="600" letter-spacing="-10">g</text>
+    <clipPath id="cut"><use href="#glyph"/></clipPath>
+  </defs>
+
+  <!-- floating light dust -->
+  <g id="dust" fill="#d8c4ff" opacity=".5"></g>
+
+  <g id="scene">
+    <!-- contact shadow -->
+    <ellipse cx="455" cy="668" rx="215" ry="34" fill="url(#floor)" filter="url(#blur6)"/>
+
+    <g id="tilt">
+      <g id="logo">
+        <g id="extrusion"></g>
+
+        <!-- chromatic fringe hugging the contour -->
+        <g style="mix-blend-mode:screen">
+          <use href="#glyph" x="-5" y="-3" fill="#5fe3ff" opacity=".38" filter="url(#blur1)"/>
+          <use href="#glyph" x="5"  y="3"  fill="#ff5fd0" opacity=".38" filter="url(#blur1)"/>
+        </g>
+
+        <!-- the glass pane -->
+        <g clip-path="url(#cut)">
+          <rect x="0" y="0" width="900" height="900" fill="url(#face)"/>
+          <g id="facets" filter="url(#refract)"></g>
+          <g id="seams" filter="url(#refract)"></g>
+          <rect id="chromeBand" x="0" y="0" width="900" height="900" fill="url(#chrome)" opacity=".55"/>
+          <ellipse cx="335" cy="380" rx="225" ry="165" fill="url(#hot)"/>
+          <path id="streak" fill="#ffffff" opacity=".0"/>
+          <rect x="0" y="0" width="900" height="900" filter="url(#grain)" opacity=".45"/>
+          <!-- tapered light falloff at the bottom of the letter -->
+          <rect x="0" y="470" width="900" height="400" fill="#0d0420" opacity=".35" filter="url(#blur6)"/>
+        </g>
+
+        <!-- frost on the upper edge: the widest, softest highlight -->
+        <g mask="url(#topLight)">
+          <use href="#glyph" fill="none" stroke="#ffffff" stroke-width="9" stroke-opacity=".35" filter="url(#blur2)"/>
+          <use href="#glyph" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-opacity=".9"/>
+        </g>
+
+        <!-- bevel highlight and the hard contour -->
+        <use href="#glyph" fill="none" stroke="url(#rim)" stroke-width="3.4" filter="url(#bevel)"/>
+        <g style="mix-blend-mode:screen">
+          <use href="#glyph" fill="none" stroke="#ffffff" stroke-opacity=".85" stroke-width="1.15"
+               transform="translate(-1.3,-1.6)"/>
+          <use href="#glyph" fill="none" stroke="#ffffff" stroke-opacity=".35" stroke-width="1"
+               transform="translate(1.6,2)"/>
+        </g>
+      </g>
+    </g>
+
+    <!-- a bloom of the letter's own colour pooling at its feet -->
+    <ellipse cx="450" cy="700" rx="190" ry="46" fill="#8b5cf6" opacity=".22" filter="url(#blur6)"/>
+  </g>
+
+<script>
+(function () {
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const el = (n, a) => { const e = document.createElementNS(SVGNS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const rnd = (() => { let s = 20240607; return () => { s |= 0; s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; })();
+
+  /* --- 3D thickness: a stack of slices sliding down-right, lit along the way --- */
+  const extr = document.getElementById("extrusion");
+  const N = 26, dx = 1.35, dy = 1.75;
+  for (let i = N; i >= 1; i--) {
+    const t = i / N;
+    const g = el("use", { href: "#glyph", fill: "url(#side)", opacity: String(0.25 + 0.75 * t) });
+    g.setAttribute("x", String(dx * i));
+    g.setAttribute("y", String(dy * i));
+    extr.appendChild(g);
+  }
+
+  /* --- crystal panes: Voronoi cells over the letter, each one a polished face --- */
+  const facets = document.getElementById("facets");
+  const seams = document.getElementById("seams");
+  const box = { x0: 120, y0: 100, x1: 800, y1: 800 };
+
+  // seeds: a few deliberately placed where the light lands, the rest scattered
+  const seeds = [
+    { x: 300, y: 300, lit: 1.0 }, { x: 430, y: 250, lit: 0.9 }, { x: 250, y: 430, lit: 0.8 },
+    { x: 400, y: 460, lit: 0.55 }, { x: 300, y: 560, lit: 0.35 }, { x: 520, y: 400, lit: 0.4 },
+    { x: 470, y: 620, lit: 0.25 }, { x: 610, y: 300, lit: 0.15 }, { x: 620, y: 540, lit: 0.05 },
+    { x: 200, y: 620, lit: 0.2 }, { x: 560, y: 700, lit: 0.0 }
+  ];
+  for (let i = 0; i < 10; i++)
+    seeds.push({ x: box.x0 + rnd() * (box.x1 - box.x0), y: box.y0 + rnd() * (box.y1 - box.y0), lit: rnd() * 0.5 });
+
+  // clip a polygon by the half plane closer to s than to c
+  function halfPlane(poly, s, c) {
+    const nx = c.x - s.x, ny = c.y - s.y;
+    const mx = (s.x + c.x) / 2, my = (s.y + c.y) / 2;
+    const inside = p => (p[0] - mx) * nx + (p[1] - my) * ny <= 0;
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const ia = inside(a), ib = inside(b);
+      if (ia) out.push(a);
+      if (ia !== ib) {
+        const da = (a[0] - mx) * nx + (a[1] - my) * ny;
+        const db = (b[0] - mx) * nx + (b[1] - my) * ny;
+        const t = da / (da - db);
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
+  }
+
+  seeds.forEach(s => {
+    let cell = [[box.x0, box.y0], [box.x1, box.y0], [box.x1, box.y1], [box.x0, box.y1]];
+    for (const c of seeds) {
+      if (c === s) continue;
+      cell = halfPlane(cell, s, c);
+      if (!cell.length) return;
+    }
+    if (cell.length < 3) return;
+    const pts = cell.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+
+    // a lit pane is pale and translucent, a shaded one sinks into violet
+    const pane = el("polygon", { points: pts });
+    if (s.lit > 0.42) {
+      pane.setAttribute("fill", "#ffffff");
+      pane.setAttribute("opacity", (0.10 + s.lit * 0.34).toFixed(3));
+    } else {
+      pane.setAttribute("fill", s.lit > 0.2 ? "#e9dcff" : "#180733");
+      pane.setAttribute("opacity", (0.16 + (0.42 - s.lit) * 0.35).toFixed(3));
+    }
+    facets.appendChild(pane);
+
+    // only some edges catch the light: crystal, not a stained glass window
+    if (rnd() > 0.35)
+      seams.appendChild(el("polygon", {
+        points: pts, fill: "none", stroke: "#ffffff",
+        "stroke-opacity": (0.14 + s.lit * 0.42).toFixed(2),
+        "stroke-width": (0.8 + s.lit * 1.5).toFixed(2),
+        "stroke-linejoin": "round"
+      }));
+  });
+
+  // one long hard specular edge across the bowl, like a polished crystal face
+  const edge = el("path", {
+    d: "M175 340 L545 265 L525 330 L195 410 Z",
+    fill: "#ffffff", opacity: "0.18"
+  });
+  facets.appendChild(edge);
+
+  /* --- the chrome sweep highlights the material --- */
+  const band = document.getElementById("chromeBand");
+  band.setAttribute("y", "380");
+  band.setAttribute("height", "230");
+
+  /* --- light dust --- */
+  const dust = document.getElementById("dust");
+  for (let i = 0; i < 26; i++) {
+    const c = el("circle", {
+      cx: (80 + rnd() * 740).toFixed(0),
+      cy: (80 + rnd() * 700).toFixed(0),
+      r: (0.6 + rnd() * 1.9).toFixed(1),
+      opacity: (0.10 + rnd() * 0.45).toFixed(2)
+    });
+    if (rnd() > 0.8) c.setAttribute("filter", "url(#blur1)");
+    dust.appendChild(c);
+  }
+
+  /* --- tilt: a hair of perspective so it reads as a solid object, not a sticker --- */
+  document.getElementById("tilt").setAttribute("transform",
+    "translate(450,430) rotate(-5) matrix(1,0.03,-0.085,1,0,0) translate(-450,-430) translate(0,-16) scale(1.03)");
+})();
+</script>
+</body>
+</html>

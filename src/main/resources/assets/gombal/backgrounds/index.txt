@@ -12,3 +12,10 @@ windows-glass-ribbons.png
 windows-dark-ribbons.png
 windows-sunrise-ribbons.png
 windows-aurora-glow.png
+macos-night-dunes.png
+macos-lagoon-dunes.png
+macos-aurora-mesh.png
+macos-cotton-mesh.png
+windows-bloom-night.png
+windows-bloom-light.png
+windows-neon-ribbons.png
