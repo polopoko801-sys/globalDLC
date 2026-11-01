@@ -434,29 +434,20 @@ public class GeometryParticles extends Module {
                 segs.add(world[e[1]]);
             }
 
-            // Neon edge: a WIDE faint glow, a medium mid, and a THIN BRIGHT core on top.
-            Color wide = Render2DEngine.injectAlpha(color, Math.round(color.getAlpha() * GLOW_STRENGTH * 0.45f));
-            Color mid = Render2DEngine.injectAlpha(color, Math.round(color.getAlpha() * GLOW_STRENGTH * 0.9f));
-            Color coreC = new Color(
-                    Math.min(255, (color.getRed() + 255) / 2),
-                    Math.min(255, (color.getGreen() + 255) / 2),
-                    Math.min(255, (color.getBlue() + 255) / 2), Math.max(1, color.getAlpha()));
-            if (glow.getValue() && near) {
-                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, segs, java.util.List.of(wide), scale * 0.22, tw);
-                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, segs, java.util.List.of(mid), scale * 0.10, tw);
-            }
-            // a floor on the core's width: at 3% of a small cube it was a fraction of a pixel and shimmered.
-            // Line width setting scales it (it used to do nothing for the 3D beams).
-            double coreW = Math.max(scale * 0.035, 0.014) * (lineWidth.getValue() / 2.2f);
-            Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, segs, java.util.List.of(coreC), coreW, tw);
-
-            // Joints: a small soft glow on every vertex, all corners in one batched billboard call. Beams end
-            // square, so where two edges met there was a notch; a dot of light over each corner closes it.
-            float joint = Math.max(scale * 0.08f, 0.025f);
-            Color jointC = Render2DEngine.injectAlpha(coreC, Math.round(color.getAlpha() * 0.85f));
-            java.util.List<Render3DEngine.GroundSprite> joints = new ArrayList<>(world.length);
-            for (Vec3d v : world) joints.add(new Render3DEngine.GroundSprite(v, joint, 0, jointC));
-            Render3DEngine.drawBillboards3D(TextureStorage.ghostGlow, joints, tw);
+            // Edges as solid square rods (prisms), drawn only from the solid middle of the line texture.
+            //
+            // They used to be camera-facing ribbons from the line texture's soft profile, plus a wide and a medium
+            // glow ribbon underneath - which is what put a see-through band along every edge of the skeleton.
+            // A rod has crisp sides, shades its faces so it reads as 3D, and the ends of neighbouring rods overlap
+            // at the corners, so no joint dots are needed to hide notches either.
+            Color edgeC = new Color(
+                    Math.min(255, (color.getRed() * 2 + 255) / 3),
+                    Math.min(255, (color.getGreen() * 2 + 255) / 3),
+                    Math.min(255, (color.getBlue() * 2 + 255) / 3), Math.max(1, color.getAlpha()));
+            // a floor on the width so a small or distant solid does not thin out to a shimmering hairline;
+            // LineWidth scales it
+            double rodW = Math.max(scale * 0.045, 0.018) * (lineWidth.getValue() / 2.2f);
+            Render3DEngine.drawPrismSegments3D(segs, java.util.List.of(edgeC), rodW, tw);
         }
     }
 

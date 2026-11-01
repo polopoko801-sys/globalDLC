@@ -64,6 +64,9 @@ public class KillEffect extends Module {
     /** Every way a death is noticed ends here once - it starts the effect for the current mode. */
     private void onDeath(Entity entity) {
         if (mc.player == null || mc.world == null || entity == mc.player) return;
+        // YOU died / lost: no kill effect. Losing a duel moves you out and the opponent "disappears" from your view,
+        // which would otherwise look exactly like one of your kills.
+        if (iLost()) return;
         if (!(entity instanceof LivingEntity)) return;
         if (!(entity instanceof PlayerEntity) && !mobs.getValue()) return;
         if (renderEntities.containsKey(entity) || lightingEntities.containsKey(entity)) return;
@@ -77,6 +80,25 @@ public class KillEffect extends Module {
     }
 
     private final Map<Integer, Long> deathSeen = new ConcurrentHashMap<>();
+
+    /** When you last died or lost a fight (0 = not recently). */
+    private volatile long myDeathAt;
+
+    private boolean iLost() {
+        return mc.player.getHealth() <= 0f || mc.player.isDead() || mc.currentScreen instanceof net.minecraft.client.gui.screen.DeathScreen
+                || System.currentTimeMillis() - myDeathAt < 5000;
+    }
+
+    /** You died or lost: remember it, and stop anything already playing (it would have been for the wrong side). */
+    private void markMyDeath() {
+        myDeathAt = System.currentTimeMillis();
+        mc.execute(() -> {
+            renderEntities.clear();
+            scenes.clear();
+            bursts.clear();
+            NinjaKill.clear();
+        });
+    }
 
     /**
      * Deaths the tick scan cannot see. Duel / minigame servers often never let a player die: the loser is
@@ -93,7 +115,21 @@ public class KillEffect extends Module {
     @SuppressWarnings("unused")
     public void onPacketReceive(thunder.hack.events.impl.PacketEvent.Receive event) {
         if (mc.player == null) return;
+        if (event.getPacket() instanceof net.minecraft.network.packet.s2c.play.HealthUpdateS2CPacket hp && hp.getHealth() <= 0f) {
+            markMyDeath();
+            return;
+        }
+        if (event.getPacket() instanceof net.minecraft.network.packet.s2c.play.DeathMessageS2CPacket) {
+            markMyDeath();
+            return;
+        }
         if (event.getPacket() instanceof net.minecraft.network.packet.s2c.play.GameMessageS2CPacket msg) {
+            String low = msg.content().getString().toLowerCase(java.util.Locale.ROOT);
+            if (low.contains("przegrałeś") || low.contains("przegrales") || low.contains("zginąłeś") || low.contains("zginales")
+                    || low.contains("you lost") || low.contains("you died") || low.contains("defeat")) {
+                markMyDeath();
+                return;
+            }
             onWinMessage(msg.content().getString());
             return;
         }

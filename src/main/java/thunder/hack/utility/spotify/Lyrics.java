@@ -118,7 +118,7 @@ public final class Lyrics {
         Track lrclib = EMPTY;
         Exception lrclibError = null;
         try {
-            lrclib = fetchLrclib(title, artist, durationMs);
+            lrclib = sameLanguage(fetchLrclib(title, artist, durationMs), title, artist);
             if (lrclib.synced()) return lrclib;
         } catch (Exception e) {
             lrclibError = e;
@@ -126,7 +126,7 @@ public final class Lyrics {
 
         Track netease;
         try {
-            netease = fetchNetease(title, artist, durationMs);
+            netease = sameLanguage(fetchNetease(title, artist, durationMs), title, artist);
         } catch (Exception e) {
             if (lrclibError != null) throw lrclibError;
             return lrclib;
@@ -135,6 +135,35 @@ public final class Lyrics {
         // lrclib down and NetEase without the song: maybe lrclib has it, so ask again later
         if (lrclibError != null && !netease.found()) throw lrclibError;
         return lrclib.found() ? lrclib : netease;
+    }
+
+    /**
+     * Throws away lyrics written in a script the song plainly is not in: mostly Chinese/Japanese characters for a
+     * title and artist that have none. That is what a wrong match looks like - a cover or a same-named song from
+     * NetEase's or lrclib's catalogue - and showing it is worse than nothing (the hidden Spotify reader then takes
+     * over, and Spotify's own lyrics are always the right language).
+     */
+    private static Track sameLanguage(Track t, String title, String artist) {
+        if (t == null || !t.found() || t.lines().isEmpty()) return t;
+        if (cjkShare(title + " " + artist) > 0f) return t;          // the song itself is CJK - anything goes
+        StringBuilder all = new StringBuilder();
+        for (Line l : t.lines()) all.append(l.text()).append(' ');
+        return cjkShare(all.toString()) > 0.3f ? EMPTY : t;
+    }
+
+    /** Share of the letters in {@code s} that are Chinese / Japanese characters. */
+    private static float cjkShare(String s) {
+        int letters = 0, cjk = 0;
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            i += Character.charCount(cp);
+            if (!Character.isLetter(cp)) continue;
+            letters++;
+            Character.UnicodeScript sc = Character.UnicodeScript.of(cp);
+            if (sc == Character.UnicodeScript.HAN || sc == Character.UnicodeScript.HIRAGANA || sc == Character.UnicodeScript.KATAKANA)
+                cjk++;
+        }
+        return letters == 0 ? 0f : cjk / (float) letters;
     }
 
     /** NetEase Cloud Music: keyless, and its catalogue carries LRC for most western tracks too. */
@@ -165,7 +194,9 @@ public final class Lyrics {
                 break;
             }
         }
-        if (pick < 0) pick = fallback;
+        // a hit by someone else is a different song (often a cover in another language) - only take a stranger's
+        // hit when there was no artist to compare with
+        if (pick < 0 && main.isBlank()) pick = fallback;
         if (pick < 0) return EMPTY;
 
         HttpResponse<String> lyr = request("https://music.163.com/api/song/lyric?lv=1&id=" + pick);

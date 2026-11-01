@@ -90,6 +90,14 @@ public final class Backtrack extends Module {
     private final Setting<OnHurt> onHurt = new Setting<>("OnHurt", OnHurt.Hold, v -> mode.getValue() == Mode.Freeze && holdPings.getValue());
     /** Freeze: safety cap - the whole world is frozen while holding, so never longer than this. */
     private final Setting<Integer> maxHold = new Setting<>("MaxHold", 1500, 100, 10000, v -> mode.getValue() == Mode.Freeze);
+    /**
+     * Freeze: after a hit on the frozen body, the server has to confirm it (damage / hurt animation). If that does
+     * not come back within your ping + a margin, the hit was a ghost - the freeze lets go at once, so the next hits
+     * go at where the target really is.
+     */
+    private final Setting<Boolean> ghostRelease = new Setting<>("GhostRelease", true, v -> mode.getValue() == Mode.Freeze);
+    /** Writes "ghost hit" in chat each time it happens, so you can see when and how often. */
+    private final Setting<Boolean> ghostDebug = new Setting<>("GhostDebug", false, v -> mode.getValue() == Mode.Freeze && ghostRelease.getValue());
     private final Setting<Integer> delay = new Setting<>("Delay", 100, 0, 1000, v -> mode.getValue() != Mode.Freeze);
     private final Setting<Integer> maxDelay = new Setting<>("MaxDelay", 150, 0, 1000, v -> mode.getValue() == Mode.Modern);
     private final Setting<Float> minRange = new Setting<>("MinRange", 1.0f, 0.0f, 6.0f);
@@ -156,6 +164,11 @@ public final class Backtrack extends Module {
         lastHit = p;
         lastHitAt = now;
         chancePassed = ThreadLocalRandom.current().nextFloat() * 100f < chance.getValue();
+        // ghost-hit watch: a hit on the frozen body must be confirmed by the server soon
+        if (holding && p.getId() == targetId && now - targetHurtAt > 520) {
+            pendingHitAt = now;
+            pendingHits++;
+        }
 
         // Freeze starts ON the hit, before the server's answer (the knockback) comes back - so the target stays
         // exactly where you hit it instead of being shoved first and frozen a tick later
@@ -196,6 +209,13 @@ public final class Backtrack extends Module {
         if (mc.player == null || packet instanceof DisconnectS2CPacket) return;
         // LB nextgen: chat is never held - a delayed chat line is the one thing a human notices
         if (packet instanceof GameMessageS2CPacket || packet instanceof ChatMessageS2CPacket) return;
+        // the server confirming a hit on the target: damage, or the hurt status - clears the ghost-hit watch
+        if (packet instanceof EntityDamageS2CPacket dmg && dmg.entityId() == targetId
+                || packet instanceof EntityStatusS2CPacket st && st.getStatus() == 2 && mc.world != null && st.getEntity(mc.world) != null && st.getEntity(mc.world).getId() == targetId) {
+            targetHurtAt = System.currentTimeMillis();
+            pendingHitAt = 0L;
+            pendingHits = 0;
+        }
         // the feedback of YOUR hit (red flash, hurt sound, swing, totem pop) is shown at once - it moves nothing,
         // so it can safely overtake the held positions, and the hit no longer looks like it landed late
         if (packet instanceof EntityDamageS2CPacket || packet instanceof EntityAnimationS2CPacket
@@ -330,9 +350,44 @@ public final class Backtrack extends Module {
 
     /* -- main thread ---------------------------------------------------- */
 
+    /* -- ghost hits ------------------------------------------------------ */
+
+    /** When an unconfirmed hit on the frozen body was sent (0 = none waiting), and how many are waiting. */
+    private volatile long pendingHitAt;
+    private volatile int pendingHits;
+    /** Last time the server confirmed damage on the target - hits inside its invulnerability are not ghosts. */
+    private volatile long targetHurtAt;
+    private int ghostCount;
+
+    /** No confirmation for a hit within ping + margin = a ghost hit: the freeze is dropped at once. */
+    private void checkGhostHit() {
+        if (!ghostRelease.getValue() || mode.getValue() != Mode.Freeze || pendingHitAt == 0L) return;
+        if (!holding) {
+            pendingHitAt = 0L;
+            pendingHits = 0;
+            return;
+        }
+        int ping = 80;
+        try {
+            var entry = mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid());
+            if (entry != null) ping = entry.getLatency();
+        } catch (Throwable ignored) {
+        }
+        long wait = 180L + Math.round(ping * 1.4);
+        if (System.currentTimeMillis() - pendingHitAt < wait) return;
+
+        ghostCount++;
+        if (ghostDebug.getValue())
+            sendMessage("§c[Backtrack] ghost hit §7(" + ghostCount + ", ping " + ping + "ms, czekałem " + wait + "ms) - puszczam zamrożenie");
+        pendingHitAt = 0L;
+        pendingHits = 0;
+        release();
+    }
+
     @Override
     public void onUpdate() {
         if (fullNullCheck()) return;
+        checkGhostHit();
         PlayerEntity target = target();
         if (target == null || Managers.FRIEND.isFriend(target)) {
             reset();

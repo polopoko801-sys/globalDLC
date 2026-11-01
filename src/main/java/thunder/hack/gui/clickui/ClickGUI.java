@@ -716,9 +716,6 @@ public class ClickGUI extends Screen {
                         (s + ring * 0.9f) / 2f, new Color(18, 18, 24, (int) (255 * sl)));
             }
             Render2DEngine.drawRound(context, x - grow, y - grow, s, s, s / 2f, c);
-            // soft highlight on the top of every dot, so they read as glossy beads rather than flat circles
-            Render2DEngine.drawRound(context, x - grow + s * 0.22f, y - grow + s * 0.12f, s * 0.56f, s * 0.3f, s * 0.15f,
-                    new Color(255, 255, 255, 55));
 
             if (hovered) {
                 tip = ColorPalette.NAMES.get(i);
@@ -918,8 +915,8 @@ public class ClickGUI extends Screen {
     private void openSettings(Module module) {
         if (settingsModule == null)
             thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.SLIDE_IN);
-        else if (settingsModule != module)
-            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP);
+        else if (settingsModule != module) // switching straight to another module's settings opens them too
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.SLIDE_IN);
         // every row of the newly opened module reveals again
         revealedAt.clear();
         settingsModule = module;

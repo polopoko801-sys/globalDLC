@@ -178,6 +178,30 @@ public final class Render3DUtil {
      * real alpha channel instead of being white-on-black and relying on adding the black away. Alpha is
      * the better answer anyway: it composites correctly over anything, additive only over dark.
      */
+    /**
+     * Solid skin geometry (KillEffect's player figures): depth-tested AND depth-writing, so the near faces of a
+     * cuboid hide its far faces like a real model. The sprite pipelines below never write depth - fine for flat
+     * glows, but a box drawn through them shows its back faces through the front (an inside-out head).
+     */
+    private static final RenderPipeline TH_SKIN_PIPELINE = RenderPipeline.builder(RenderPipelines.POSITION_TEX_COLOR_SNIPPET)
+            .withLocation(Identifier.of("gombal", "pipeline/skin_solid"))
+            .withVertexFormat(VertexFormats.POSITION_TEXTURE_COLOR, VertexFormat.DrawMode.QUADS)
+            .withDepthTestFunction(DepthTestFunction.LEQUAL_DEPTH_TEST)
+            .withDepthWrite(true)
+            .withCull(false)
+            .withBlend(BlendFunction.TRANSLUCENT)
+            .build();
+
+    private static final Map<Identifier, RenderLayer> SKIN_LAYERS = new HashMap<>();
+
+    /** A skin (or any pixel-art texture) on solid, depth-writing world geometry, with the texture's own sampler. */
+    public static RenderLayer skinLayer(Identifier texture) {
+        return SKIN_LAYERS.computeIfAbsent(texture, id -> RenderLayer.of("th_skin_" + id.getPath(),
+                RenderSetup.builder(TH_SKIN_PIPELINE)
+                        .texture("Sampler0", id)
+                        .build()));
+    }
+
     private static final Map<Identifier, RenderLayer> PIXEL_LAYERS = new HashMap<>();
 
     /** As {@link #texturedLayer}, but with the texture's own (nearest) sampler - for pixel art such as skins. */

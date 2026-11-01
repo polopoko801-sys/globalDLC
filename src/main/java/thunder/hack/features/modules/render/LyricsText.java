@@ -38,7 +38,7 @@ public class LyricsText extends Module {
     /** How long before its moment a word shows up. */
     private final Setting<Integer> lead = new Setting<>("Lead", 350, 0, 1500);
     /** Shifts everything against Spotify's clock, for a recording that runs early or late. */
-    private final Setting<Integer> offset = new Setting<>("Offset", 120, -1000, 1000);
+    private final Setting<Integer> offset = new Setting<>("Offset", 0, -1000, 1000);
     /** Reveal the words one by one, or the whole line at once. */
     private final Setting<Boolean> wordByWord = new Setting<>("Words", true);
     private final Setting<Style> style = new Setting<>("Style", Style.Outline);
@@ -142,8 +142,16 @@ public class LyricsText extends Module {
                     displayIndex = state.index();
                     finished = false;
                     lineClock = clock;
-                    startLine(text, now);
+                    // exact source: the words are spread over the line's real length instead of a guessed pace
+                    startLine(text, now, exactLen > 0
+                            ? Math.clamp(exactLen * 0.88f / (syllablesOf(text) + 1f), MIN_SYLLABLE_MS, MAX_SYLLABLE_MS)
+                            : syllableMs);
                 }
+            } else if (exactLen > 0) {
+                // Exact source (lrclib + the real position): the clock IS the position in the line, every frame -
+                // it cannot drift, pauses and seeks are followed, and the next line is never guessed early; it
+                // comes when the song really gets there.
+                lineClock = exactPos + offset.getValue();
             } else if (state.playing()) {
                 lineClock += dt;
                 // The next line is known before Spotify highlights it. Once this one is about to run out (at the
@@ -193,9 +201,14 @@ public class LyricsText extends Module {
      * is only the fallback for songs lrclib does not have.
      */
     private SpotifyCard.State source() {
+        exactLen = 0L;
+        exactPos = 0L;
         SpotifyCard.State synced = fromLrclib();
         return synced != null ? synced : SpotifyCard.state();
     }
+
+    /** From the exact source: how long the current line really lasts (0 = unknown) and how far into it we are. */
+    private long exactLen, exactPos;
 
     /** The menu card's source, shaped like {@link SpotifyCard.State}; null when it has nothing for this song. */
     private SpotifyCard.State fromLrclib() {
@@ -234,6 +247,8 @@ public class LyricsText extends Module {
             return new SpotifyCard.State(SpotifyCard.Status.Intro, -1, "", lines.get(0).text(), now - position, playing);
         var cur = lines.get(idx);
         String next = idx + 1 < lines.size() ? lines.get(idx + 1).text() : "";
+        exactLen = idx + 1 < lines.size() ? Math.max(300L, lines.get(idx + 1).atMs() - cur.atMs()) : 5000L;
+        exactPos = Math.max(0L, position - cur.atMs());
         // since = the wall-clock moment this line started, worked back from the exact position in the song
         return new SpotifyCard.State(SpotifyCard.Status.Line, idx, cur.text(), next, now - (position - cur.atMs()), playing);
     }
@@ -269,6 +284,12 @@ public class LyricsText extends Module {
      * spread by syllables at the pace learned from this song.
      */
     private void startLine(String text, long now) {
+        startLine(text, now, syllableMs);
+    }
+
+    /** @param pace length of one syllable for this line, in ms */
+    private void startLine(String text, long now, float pace) {
+        float syllableMs = pace;
         retire(now);
         String[] tokens = text.split("\s+");
         List<Word> words = new ArrayList<>(tokens.length);

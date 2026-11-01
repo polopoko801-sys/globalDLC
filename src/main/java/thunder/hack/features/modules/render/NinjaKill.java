@@ -72,6 +72,9 @@ final class NinjaKill {
         final Vec3d size;
         float yaw, pitch, spinYaw, spinPitch;
         final boolean head;
+        /** With a skin: which part of the body this is and which of its pixel rows (a half of a limb, say). */
+        SkinFigure.Part part;
+        int y0, y1;
 
         Piece(Vec3d pos, Vec3d vel, Vec3d size, float yaw, boolean head) {
             this.pos = pos;
@@ -94,6 +97,8 @@ final class NinjaKill {
         net.minecraft.world.World world;
         Vec3d fromPlayer;       // where the victim stood relative to you - kept when the world changes
         final boolean cinematic;
+        /** The beaten player's skin (null for a mob) - their body stays on screen in it until it is cut. */
+        final net.minecraft.util.Identifier victimSkin;
         final float bodyYaw, scale;
         final long start;
         final Cut[] cuts = new Cut[SLASH_AT.length];
@@ -110,6 +115,7 @@ final class NinjaKill {
             this.world = mc.world;
             this.fromPlayer = origin.subtract(mc.player.getEntityPos());
             this.cinematic = cinematic;
+            this.victimSkin = SkinFigure.skinOf(victim);
             this.bodyYaw = victim.getBodyYaw();
             this.scale = Math.max(0.4f, victim.getHeight() / 1.8f);
             this.start = System.currentTimeMillis();
@@ -143,7 +149,10 @@ final class NinjaKill {
     static void start(LivingEntity victim, boolean blood, boolean smoke, boolean cinematic) {
         if (mc.player == null || mc.world == null) return;
         for (Slice s : ACTIVE) if (s.id == victim.getId()) return;
-        ACTIVE.add(new Slice(victim, blood, smoke, cinematic));
+        Slice slice = new Slice(victim, blood, smoke, cinematic);
+        ACTIVE.add(slice);
+        // a player is drawn by us from now on (in their skin) - so it stays to be cut even if the server removes it
+        if (slice.victimSkin != null) HIDDEN.add(slice.id);
         if (smoke) puff(mc.player.getEntityPos(), 18);
         sound(SoundEvents.ENTITY_ILLUSIONER_MIRROR_MOVE, 1.25f, 0.8f);
     }
@@ -185,6 +194,7 @@ final class NinjaKill {
             }
 
             drawNinja(s, t);
+            if (!s.split && s.victimSkin != null) drawVictim(s, t);
 
             if (!s.split && t >= SPLIT_AT) split(s);
             if (s.split) stepAndDrawPieces(s, t, dt);
@@ -317,8 +327,73 @@ final class NinjaKill {
                 drawFigure(ghost.feet(), ghost.yaw(), ghost.dash(), alpha * (0.42f - k * 0.08f), true, s.scale);
             }
         }
-        drawFigure(p.feet(), p.yaw(), p.dash(), alpha, false, s.scale);
+        net.minecraft.util.Identifier mine = SkinFigure.skinOf(mc.player);
+        if (mine != null) drawSkinNinja(mine, p.feet(), p.yaw(), p.dash(), alpha, s.scale);
+        else drawFigure(p.feet(), p.yaw(), p.dash(), alpha, false, s.scale);
         if (p.dash() >= 0f) drawBladeTrail(s, t, alpha);
+    }
+
+    /* ------------------------------------------------------------------ bodies in skins */
+
+    /**
+     * A whole player body in a skin. {@code lean} tips the torso and head about the hips, {@code stride} swings the
+     * legs, the arm pitches swing each arm about its shoulder (0 = hanging, -90 = straight forward) - and the
+     * shoulders travel with the lean, so the arms stay attached.
+     *
+     * @return the world origin the right arm was drawn from (the sword hangs off it)
+     */
+    private static Vec3d drawSkinBody(net.minecraft.util.Identifier skin, Vec3d feet, float yaw, float lean, float stride,
+                                      float rightArm, float leftArm, float sc, int a) {
+        float px = SkinFigure.PX * sc;
+        Vec3d hip = new Vec3d(0, 12 * px, 0);
+        SkinFigure.part(skin, feet, yaw, stride, hip, new Vec3d(-4 * px, 0, -2 * px), SkinFigure.Part.RIGHT_LEG, 0, 12, sc, a);
+        SkinFigure.part(skin, feet, yaw, -stride, hip, new Vec3d(0, 0, -2 * px), SkinFigure.Part.LEFT_LEG, 0, 12, sc, a);
+        SkinFigure.part(skin, feet, yaw, lean, hip, new Vec3d(-4 * px, 12 * px, -2 * px), SkinFigure.Part.BODY, 0, 12, sc, a);
+        SkinFigure.part(skin, feet, yaw, lean, hip, new Vec3d(-4 * px, 24 * px, -4 * px), SkinFigure.Part.HEAD, 0, 8, sc, a);
+
+        Vec3d rSh = new Vec3d(-6 * px, 22 * px, 0), lSh = new Vec3d(6 * px, 22 * px, 0);
+        Vec3d rOrigin = feet.add(toWorld(feet, yaw, lean, hip, rSh).subtract(toWorld(feet, yaw, 0f, hip, rSh)));
+        Vec3d lOrigin = feet.add(toWorld(feet, yaw, lean, hip, lSh).subtract(toWorld(feet, yaw, 0f, hip, lSh)));
+        SkinFigure.part(skin, rOrigin, yaw, rightArm, rSh, new Vec3d(-8 * px, 12 * px, -2 * px), SkinFigure.Part.RIGHT_ARM, 0, 12, sc, a);
+        SkinFigure.part(skin, lOrigin, yaw, leftArm, lSh, new Vec3d(4 * px, 12 * px, -2 * px), SkinFigure.Part.LEFT_ARM, 0, 12, sc, a);
+        return rOrigin;
+    }
+
+    /** You, in your own skin, as the ninja: red headband, katana held forward, leaning into the dash. */
+    private static void drawSkinNinja(net.minecraft.util.Identifier skin, Vec3d feet, float yaw, float dash, float alpha, float sc) {
+        boolean moving = dash >= 0f;
+        float lean = moving ? 24f : 6f;
+        float stride = moving ? (float) Math.sin(dash * Math.PI * 4) * 38f : 0f;
+        float sword = swingAt(dash);
+        int a = Math.round(255 * alpha);
+        Vec3d rOrigin = drawSkinBody(skin, feet, yaw, lean, stride, sword, moving ? 55f + lean : 15f, sc, a);
+
+        // headband round the head (turns with the lean), two tails behind
+        Vec3d hip = new Vec3d(0, 0.675 * sc, 0);
+        box(feet, yaw, lean, hip, -0.235, 1.6, -0.235, 0.235, 1.67, 0.235, sc,
+                new Color(190, 20, 35, a), new Color(110, 8, 18, a), 0.006f * sc);
+        box(feet, yaw, lean + 25f + (float) Math.sin(System.currentTimeMillis() / 70.0) * 10f, new Vec3d(0, 1.635 * sc, -0.235 * sc),
+                -0.04, 1.6, -0.6, 0.04, 1.67, -0.235, sc, new Color(175, 22, 34, a), new Color(110, 8, 18, a), 0.004f * sc);
+
+        // katana off the right hand, along the arm: handle, guard, blade
+        Vec3d sh = new Vec3d(-0.3375 * sc, 1.2375 * sc, 0);
+        box(rOrigin, yaw, sword, sh, -0.36, 0.415, -0.022, -0.315, 0.675, 0.022, sc,
+                new Color(22, 22, 26, a), new Color(160, 20, 32, a), 0.006f * sc);
+        box(rOrigin, yaw, sword, sh, -0.395, 0.395, -0.055, -0.28, 0.415, 0.055, sc,
+                new Color(205, 165, 60, a), new Color(120, 90, 30, a), 0.004f * sc);
+        box(rOrigin, yaw, sword, sh, -0.345, -0.505, -0.02, -0.33, 0.395, 0.028, sc,
+                new Color(210, 216, 226, a), new Color(255, 255, 255, Math.round(230 * alpha)), 0.004f * sc);
+    }
+
+    /** The beaten player, in their skin, standing where they fell - jolting back at every cut - until it splits. */
+    private static void drawVictim(Slice s, long t) {
+        float lean = 0f;
+        for (int i = 0; i < SLASH_AT.length; i++) {
+            long d = t - cutMoment(i);
+            if (d >= 0) lean -= 11f * (float) Math.exp(-d / 220.0);
+        }
+        float twitch = t > cutMoment(0) ? (float) Math.sin(t / 45.0) * 3f * (float) Math.exp(-(t - cutMoment(0)) / 900.0) : 0f;
+        drawSkinBody(s.victimSkin, s.origin, s.bodyYaw + twitch, lean, 0f, -8f, -8f, s.scale, 255);
     }
 
     /** Sword-arm pitch for a point in a dash (the same formula the figure uses). */
@@ -340,7 +415,8 @@ final class NinjaKill {
     /** The glowing arc the blade's tip leaves behind it while the ninja dashes through. */
     private static void drawBladeTrail(Slice s, long t, float alpha) {
         float sc = s.scale;
-        Vec3d pivot = new Vec3d(-0.31 * sc, 1.4 * sc, 0), tip = new Vec3d(-0.315 * sc, -0.18 * sc, 0);
+        // the blade tip of the skin ninja (shoulder pivot, tip of the blade along the arm)
+        Vec3d pivot = new Vec3d(-0.3375 * sc, 1.2375 * sc, 0), tip = new Vec3d(-0.3375 * sc, -0.505 * sc, 0);
         List<Vec3d> pts = new ArrayList<>();
         for (int k = 0; k <= 12; k++) {
             Pose p = poseAt(s, t - k * 14L);
@@ -503,6 +579,11 @@ final class NinjaKill {
                 {-0.125, 0.56, 0, 0.25, 0.37, 0.25}, {-0.125, 0.19, 0, 0.25, 0.37, 0.25}, // leg
         };
         Vec3d centre = s.origin.add(0, 1.0 * sc, 0);
+        if (s.victimSkin != null) {
+            splitSkin(s, fwd, right, centre);
+            sound(SoundEvents.ENTITY_PLAYER_ATTACK_SWEEP, 0.6f, 1f);
+            return;
+        }
         for (int i = 0; i < parts.length; i++) {
             double[] p = parts[i];
             Vec3d at = s.origin.add(right.multiply(p[0] * sc)).add(0, p[1] * sc, 0).add(fwd.multiply(p[2] * sc));
@@ -518,6 +599,43 @@ final class NinjaKill {
                             vel.x * 0.05, vel.y * 0.05, vel.z * 0.05);
         }
         sound(SoundEvents.ENTITY_PLAYER_ATTACK_SWEEP, 0.6f, 1f);
+    }
+
+    /**
+     * The beaten player's own body cut into eleven pieces of their skin: head, chest, belly, and each arm and leg
+     * cut in half - every piece shows the skin it had, the cut faces are raw red.
+     */
+    private static void splitSkin(Slice s, Vec3d fwd, Vec3d right, Vec3d centre) {
+        float sc = s.scale, px = SkinFigure.PX * sc;
+        // part, rows, centre in skin pixels: x (+ = the figure's left), y (up from the feet)
+        Object[][] cuts = {
+                {SkinFigure.Part.HEAD, 0, 8, 0, 28},
+                {SkinFigure.Part.BODY, 0, 6, 0, 21}, {SkinFigure.Part.BODY, 6, 12, 0, 15},
+                {SkinFigure.Part.RIGHT_ARM, 0, 6, -6, 21}, {SkinFigure.Part.RIGHT_ARM, 6, 12, -6, 15},
+                {SkinFigure.Part.LEFT_ARM, 0, 6, 6, 21}, {SkinFigure.Part.LEFT_ARM, 6, 12, 6, 15},
+                {SkinFigure.Part.RIGHT_LEG, 0, 6, -2, 9}, {SkinFigure.Part.RIGHT_LEG, 6, 12, -2, 3},
+                {SkinFigure.Part.LEFT_LEG, 0, 6, 2, 9}, {SkinFigure.Part.LEFT_LEG, 6, 12, 2, 3},
+        };
+        for (Object[] c : cuts) {
+            SkinFigure.Part part = (SkinFigure.Part) c[0];
+            int y0 = (int) c[1], y1 = (int) c[2];
+            double lx = (int) c[3] * px, ly = (int) c[4] * px;
+            // local +x is the figure's left = -right
+            Vec3d at = s.origin.add(right.multiply(-lx)).add(0, ly, 0);
+            Vec3d out = at.subtract(centre);
+            out = out.lengthSquared() < 1e-4 ? new Vec3d(RANDOM.nextGaussian(), 0, RANDOM.nextGaussian()).normalize() : out.normalize();
+            double speed = 1.1 + RANDOM.nextDouble() * 1.2;
+            Vec3d vel = out.multiply(speed).add(RANDOM.nextGaussian() * 0.35, 1.8 + RANDOM.nextDouble() * 1.4, RANDOM.nextGaussian() * 0.35);
+            Piece p = new Piece(at, vel, new Vec3d(part.w * px, (y1 - y0) * px, part.d * px), s.bodyYaw, part == SkinFigure.Part.HEAD);
+            p.part = part;
+            p.y0 = y0;
+            p.y1 = y1;
+            s.pieces.add(p);
+            if (s.blood && mc.world != null)
+                for (int k = 0; k < 5; k++)
+                    mc.world.addParticleClient(new DustParticleEffect(0x9E0B12, 1.4f), at.x, at.y, at.z,
+                            vel.x * 0.05, vel.y * 0.05, vel.z * 0.05);
+        }
     }
 
     private static void stepAndDrawPieces(Slice s, long t, float dt) {
@@ -538,6 +656,14 @@ final class NinjaKill {
             p.yaw += p.spinYaw * dt;
             p.pitch += p.spinPitch * dt;
 
+            if (p.part != null && s.victimSkin != null) {
+                // a piece of their skin, turning about its own centre
+                float px = SkinFigure.PX * s.scale;
+                float topY = (p.y0 + p.y1) / 2f * px;
+                Vec3d min = new Vec3d(-p.part.w * px / 2f, topY - p.part.h * px, -p.part.d * px / 2f);
+                SkinFigure.part(s.victimSkin, p.pos, p.yaw, p.pitch, Vec3d.ZERO, min, p.part, p.y0, p.y1, s.scale, Math.round(255 * alpha));
+                continue;
+            }
             Vec3d h = p.size.multiply(0.5);
             Box local = new Box(-h.x, -h.y, -h.z, h.x, h.y, h.z);
             Color fill = p.head ? new Color(196, 150, 112, Math.round(250 * alpha)) : new Color(70, 76, 98, Math.round(250 * alpha));
