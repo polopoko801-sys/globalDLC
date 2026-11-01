@@ -61,24 +61,26 @@ public class AiChatScreen extends Screen {
         float x = left(), y = top() - (1f - e) * 10f;
         Color accent = HudEditor.getColor(0);
 
-        // the window: dark glass with an accent edge, sliding down into place as it opens
-        Render2DEngine.drawRoundSmooth(context, x - 2f, y + 2f, W + 4f, H + 4f, 12f, new Color(0, 0, 0, Math.round(70 * e)));
-        Render2DEngine.drawRoundSmooth(context, x, y, W, H, 10f, new Color(14, 14, 22, Math.round(235 * e)));
-        Render2DEngine.drawRoundSmooth(context, x, y, W, HEADER, 10f, new Color(255, 255, 255, Math.round(10 * e)));
+        // the window: liquid glass - the world blurred behind it - sliding down into place as it opens
+        Render2DEngine.drawRoundSmooth(context, x - 3f, y + 3f, W + 6f, H + 6f, 14f, new Color(0, 0, 0, Math.round(50 * e)));
+        Render2DEngine.drawLiquidGlass(context, x, y, W, H, 12f, e);
+        // a hairline under the header instead of a band
+        Render2DEngine.drawRoundSmooth(context, x + PAD, y + HEADER, W - PAD * 2, 1f, 0.5f, new Color(255, 255, 255, Math.round(28 * e)));
 
-        // header: the AI chip and its state
-        Render2DEngine.drawRoundSmooth(context, x + PAD, y + 6f, 26f, 14f, 7f, Render2DEngine.injectAlpha(accent, Math.round(230 * e)));
-        FontRenderers.sf_bold_mini.drawString(context, "AI", x + PAD + 8f, y + 10.5f, Color.WHITE.getRGB());
+        // header: the AI chip (sparkle + letters) and its state
+        Render2DEngine.drawRoundSmooth(context, x + PAD, y + 5f, 34f, 16f, 8f, Render2DEngine.injectAlpha(accent, Math.round(225 * e)));
+        sparkle(context, x + PAD + 8.5f, y + 13f, 3.8f, Color.WHITE);
+        FontRenderers.sf_bold_mini.drawString(context, "AI", x + PAD + 15f, y + 10.5f, Color.WHITE.getRGB());
         LearnAI ai = ModuleManager.learnAI;
         String state = ai.isEnabled() ? "uczy się · pisz polecenia" : "uśpione · pierwsze polecenie je obudzi";
-        FontRenderers.sf_medium_mini.drawString(context, "LearnAI  —  " + state, x + PAD + 32f, y + 10.5f, new Color(210, 210, 222).getRGB());
+        FontRenderers.sf_medium_mini.drawString(context, "LearnAI  —  " + state, x + PAD + 40f, y + 10.5f, new Color(225, 225, 235).getRGB());
 
         drawConversation(context, x, y, ai, e);
 
         // the input
         float iy = y + H - PAD - INPUT_H;
         Render2DEngine.drawRoundSmooth(context, x + PAD, iy, W - PAD * 2, INPUT_H, 8f,
-                new Color(255, 255, 255, input.isFocused() ? 26 : 16));
+                new Color(255, 255, 255, input.isFocused() ? 30 : 18));
         float sx = x + W - PAD - 34f;
         boolean sendHover = Render2DEngine.isHovered(mouseX, mouseY, sx, iy + 2f, 32f, INPUT_H - 4f);
         Render2DEngine.drawRoundSmooth(context, sx, iy + 2f, 32f, INPUT_H - 4f, 7f,
@@ -122,6 +124,13 @@ public class AiChatScreen extends Screen {
                 font.drawString(context, lines.get(k), bx + 7f, by + 5f + k * LINE, new Color(255, 255, 255, Math.max(5, a)).getRGB());
             by -= 5f;
         }
+    }
+
+    /** A four-pointed star centred on (x, y) - the AI mark, as on the chat badge. */
+    private static void sparkle(DrawContext context, float x, float y, float r, Color c) {
+        float w = r * 0.32f;
+        Render2DEngine.drawPolygonSmooth(context, new float[]{x, x + w, x, x - w}, new float[]{y - r, y, y + r, y}, c);
+        Render2DEngine.drawPolygonSmooth(context, new float[]{x - r, x, x + r, x}, new float[]{y, y - w, y, y + w}, c);
     }
 
     private static List<String> wrap(FontRenderer font, String text, float max) {

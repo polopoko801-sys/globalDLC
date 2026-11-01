@@ -68,6 +68,7 @@
     "MixinCobwebBlock",
     "MixinEndCrystal",
     "MixinEntity",
+    "MixinEntityRenderManager",
     "MixinEntityLiving",
     "MixinFireWorkEntity",
     "MixinFlowableFluid",

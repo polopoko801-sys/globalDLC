@@ -22,15 +22,22 @@ public final class ColorPalette {
     public static final List<Color> SWATCHES = List.of(
             new Color(235, 64, 64),    // red
             new Color(244, 128, 47),   // orange
-            new Color(245, 205, 66),   // yellow
+            new Color(232, 182, 60),   // gold
+            new Color(255, 228, 40),   // yellow - a real, bright yellow (the old one read as gold)
+            new Color(170, 230, 60),   // lime
             new Color(112, 214, 108),  // green
             new Color(72, 214, 186),   // mint
+            new Color(60, 220, 240),   // cyan
             new Color(70, 178, 245),   // sky
             new Color(78, 110, 240),   // blue
             new Color(168, 85, 247),   // purple
             new Color(238, 100, 190),  // pink
+            new Color(255, 120, 150),  // rose
             new Color(236, 238, 245)   // white
     );
+
+    public static final List<String> NAMES = List.of(
+            "Red", "Orange", "Gold", "Yellow", "Lime", "Green", "Mint", "Cyan", "Sky", "Blue", "Purple", "Pink", "Rose", "White");
 
     /** Modules whose colours a palette click must not touch (on top of every HUD element). */
     public static final Set<String> EXCLUDED = Set.of("Skeleton", "HudEditor");

@@ -14,6 +14,8 @@ import thunder.hack.utility.render.Render2DEngine;
 import thunder.hack.utility.render.Render3DEngine;
 import thunder.hack.utility.render.ScreenCapture;
 import thunder.hack.utility.render.FxSurface;
+import thunder.hack.utility.render.TrailTextures;
+import net.minecraft.util.Identifier;
 
 import java.awt.Color;
 import java.util.ArrayList;
@@ -43,10 +45,27 @@ public class Trails extends Module {
     private final Setting<Float> blobSpacing = new Setting<>("Blob Spacing", 0.55f, 0.2f, 2.0f, v -> trailsMode.is(TrailsMode.Blobs));
     private final Setting<Float> tint = new Setting<>("Tint", 0.45f, 0.0f, 1.0f, v -> trailsMode.is(TrailsMode.Water) || trailsMode.is(TrailsMode.Glass) || trailsMode.is(TrailsMode.Blobs));
 
-    public enum TrailsMode {Astolfo, Rainbow, Client, Custom, Water, Glass, Blobs}
+    public enum TrailsMode {Astolfo, Rainbow, Client, Custom, Water, Glass, Blobs, Images}
+
+    /** Images mode: built-in sprites (drawn in code) or your own picture from misc/images/trail.png. */
+    public enum TrailImage {Stars, Hearts, Sparkles, Flames, Snowflakes, Bubbles, Petals, Notes, Custom}
+
+    private final Setting<TrailImage> image = new Setting<>("Image", TrailImage.Stars, v -> trailsMode.is(TrailsMode.Images));
+    private final Setting<Float> imageSize = new Setting<>("Image Size", 0.35f, 0.1f, 1.5f, v -> trailsMode.is(TrailsMode.Images));
+    private final Setting<Float> imageSpacing = new Setting<>("Image Spacing", 0.5f, 0.15f, 2.0f, v -> trailsMode.is(TrailsMode.Images));
+    private final Setting<Boolean> imageSpin = new Setting<>("Image Spin", true, v -> trailsMode.is(TrailsMode.Images));
+    /** Colour the sprite with Bottom Color. Off: drawn as it is - what you want for a colourful custom photo. */
+    private final Setting<Boolean> imageTint = new Setting<>("Image Tint", true, v -> trailsMode.is(TrailsMode.Images));
+
+    private record Sprite(float x, float y, float half, float angle, int argb) {
+    }
+
+    private Identifier customImage;
+    private long customTriedAt;
 
     private boolean usesOwnColors() {
-        return trailsMode.is(TrailsMode.Custom) || trailsMode.is(TrailsMode.Water) || trailsMode.is(TrailsMode.Glass) || trailsMode.is(TrailsMode.Blobs);
+        return trailsMode.is(TrailsMode.Custom) || trailsMode.is(TrailsMode.Water) || trailsMode.is(TrailsMode.Glass)
+                || trailsMode.is(TrailsMode.Blobs) || trailsMode.is(TrailsMode.Images);
     }
 
     /** How the ribbon is drawn: Water / Glass trails modes get the see-through styles, every other mode the coloured ribbon. */
@@ -65,7 +84,7 @@ public class Trails extends Module {
                 Color c = HudEditor.getColor(0);
                 color = new Vec3d((float) c.getRed() / 255.0f, (float) c.getGreen() / 255.0f, (float) c.getBlue() / 255.0f);
             }
-            case Custom, Water, Glass, Blobs -> color = new Vec3d(red, green, blue);
+            case Custom, Water, Glass, Blobs, Images -> color = new Vec3d(red, green, blue);
             case Astolfo -> color = new Vec3d((float) Render2DEngine.astolfo(false, 1).getRed() / 255.0f,
                     (float) Render2DEngine.astolfo(false, 1).getGreen() / 255.0f, (float) Render2DEngine.astolfo(false, 1).getBlue() / 255.0f);
             case Rainbow -> color = new Vec3d((float) Render2DEngine.rainbow(300, 1.0f, 1.0f).getRed() / 255.0f,
@@ -126,6 +145,10 @@ public class Trails extends Module {
         }
 
         Matrix3x2f pose = GuiRender.pose(context);
+        if (trailsMode.is(TrailsMode.Images)) {
+            drawImages(context, pose);
+            return;
+        }
         if (trailsMode.is(TrailsMode.Blobs)) {
             drawBlobs(context);
             return;
@@ -224,6 +247,76 @@ public class Trails extends Module {
         float[] op = new float[alphas.size()];
         for (int i = 0; i < op.length; i++) op[i] = alphas.get(i);
         FxSurface.draw(context, FxSurface.Kind.Water, verts, op, bottomColor.getValue().getColor(), tint.getValue(), false);
+    }
+
+    /**
+     * Images: a sprite every "Image Spacing" blocks along the path, at chest height, facing the camera. Each one
+     * pops in, gently bobs and turns, then shrinks and fades as it ages - one batched draw for the whole trail.
+     */
+    private void drawImages(DrawContext context, Matrix3x2f pose) {
+        Identifier tex;
+        if (image.is(TrailImage.Custom)) {
+            if (customImage == null && System.currentTimeMillis() - customTriedAt > 3000) {
+                customTriedAt = System.currentTimeMillis();
+                try {
+                    customImage = thunder.hack.utility.ThunderUtility.getCustomImg("trail");
+                } catch (Exception e) {
+                    sendMessage(".minecraft -> " + thunder.hack.core.manager.client.ConfigManager.CONFIG_FOLDER_NAME + " -> misc -> images -> trail.png");
+                }
+            }
+            tex = customImage;
+        } else {
+            tex = TrailTextures.get(TrailTextures.Kind.valueOf(image.getValue().name()));
+        }
+        if (tex == null) return;
+
+        var cam = mc.gameRenderer.getCamera();
+        Vec3d forward = Vec3d.fromPolar(cam.getPitch(), cam.getYaw());
+        Vec3d up = forward.crossProduct(new Vec3d(0, 1, 0)).normalize().crossProduct(forward).normalize();
+        float time = (System.currentTimeMillis() % 100000L) / 1000f;
+        int tintRgb = bottomColor.getValue().getColor() & 0xFFFFFF;
+
+        java.util.List<Sprite> sprites = new java.util.ArrayList<>();
+        Vec3d last = null;
+        for (int idx = trails.size() - 1; idx >= 0; idx--) {               // newest first, spacing starts at you
+            Trail trail = trails.get(idx);
+            if (last != null && trail.position.distanceTo(last) < imageSpacing.getValue()) continue;
+            last = trail.position;
+            float life = 1.0f - (float) trail.existed / sizeToRemove.getValue();
+            if (life <= 0f) continue;
+            float age = 1f - life;
+            float popIn = Math.min(1f, age * 8f);                            // quick pop when it is dropped
+            float pop = (float) thunder.hack.utility.render.animation.EaseOutBack.dropAnimation(popIn);
+            float scale = imageSize.getValue() * pop * (0.55f + 0.45f * life);
+            double bob = Math.sin(time * 2.2 + idx * 0.41) * 0.06;
+            Vec3d centre = trail.position.add(0, 1.0 + bob + age * 0.25, 0);   // drifts up a little as it fades
+            Vec3d sc = Render3DEngine.worldSpaceToScreenSpace(centre);
+            Vec3d se = Render3DEngine.worldSpaceToScreenSpace(centre.add(up.multiply(scale)));
+            if (!(sc.z > 0 && sc.z < 1) || !(se.z > 0 && se.z < 1)) continue;
+            float half = Math.min(90f, (float) Math.hypot(se.x - sc.x, se.y - sc.y));
+            if (half < 0.6f) continue;
+            float angle = imageSpin.getValue() ? (float) Math.sin(time * 1.6 + idx * 0.7) * 0.5f : 0f;
+            float alpha = trailsAlpha.getValue() * life;
+            int rgb = imageTint.getValue() ? tintRgb : 0xFFFFFF;
+            int argb = (Math.round(MathHelper.clamp(alpha, 0f, 1f) * 255) << 24) | rgb;
+            sprites.add(new Sprite((float) sc.x, (float) sc.y, half, angle, argb));
+        }
+        if (sprites.isEmpty()) return;
+
+        // oldest first, so the newest sprite (by your feet) lands on top
+        java.util.Collections.reverse(sprites);
+        GuiRender.textured(context, tex, Render2DEngine.currentClip(), vc -> {
+            for (Sprite s : sprites) {
+                float cx = s.x(), cy = s.y(), h = s.half();
+                float cos = (float) Math.cos(s.angle()) * h, sin = (float) Math.sin(s.angle()) * h;
+                int c = s.argb();
+                // corners of a square of half-size h turned by angle: (-1,-1) (1,-1) (1,1) (-1,1)
+                GuiRender.vertexTex(vc, pose, cx + (-cos + sin), cy + (-sin - cos), 0f, 0f, c);
+                GuiRender.vertexTex(vc, pose, cx + (-cos - sin), cy + (-sin + cos), 0f, 1f, c);
+                GuiRender.vertexTex(vc, pose, cx + (cos - sin), cy + (sin + cos), 1f, 1f, c);
+                GuiRender.vertexTex(vc, pose, cx + (cos + sin), cy + (sin - cos), 1f, 0f, c);
+            }
+        });
     }
 
     /**

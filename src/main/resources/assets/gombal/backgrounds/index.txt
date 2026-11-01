@@ -19,3 +19,11 @@ macos-cotton-mesh.png
 windows-bloom-night.png
 windows-bloom-light.png
 windows-neon-ribbons.png
+space-nebula.png
+space-planet-rise.png
+nature-mountain-sunset.png
+nature-forest-mist.png
+city-neon-skyline.png
+minecraft-blocky-sunset.png
+dark-aurora-lines.png
+minimal-pastel-waves.png

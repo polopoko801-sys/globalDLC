@@ -44,6 +44,17 @@ import static thunder.hack.features.modules.Module.mc;
 
 @Mixin(MinecraftClient.class)
 public abstract class MixinMinecraftClient {
+    /** KillEffect cinematic: clicks do nothing while the scene plays - no stray hits or item use. */
+    @org.spongepowered.asm.mixin.injection.Inject(method = "doAttack", at = @org.spongepowered.asm.mixin.injection.At("HEAD"), cancellable = true)
+    private void noAttackInCinematic(org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        if (thunder.hack.features.modules.render.KillEffect.cinematicActive()) cir.setReturnValue(false);
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(method = "doItemUse", at = @org.spongepowered.asm.mixin.injection.At("HEAD"), cancellable = true)
+    private void noUseInCinematic(org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (thunder.hack.features.modules.render.KillEffect.cinematicActive()) ci.cancel();
+    }
+
 
     @Shadow
     @Final

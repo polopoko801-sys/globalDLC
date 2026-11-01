@@ -52,9 +52,21 @@ public abstract class MixinCamera {
         }
     }
 
+    @Shadow
+    protected abstract void setPos(double x, double y, double z);
+
     @Inject(method = "update", at = @At("TAIL"))
     private void updateHook(World area, Entity focusedEntity, boolean thirdPerson, boolean inverseView, float tickDelta, CallbackInfo ci) {
         if (ModuleManager.freeCam.isEnabled()) {
+            this.thirdPerson = true;
+            return;
+        }
+        // KillEffect Ninja: the camera leaves your head and orbits the cut for the length of the scene
+        Camera self = (Camera) (Object) this;
+        double[] pose = thunder.hack.features.modules.render.KillEffect.cinematicPose(self.getCameraPos(), this.yaw, this.pitch);
+        if (pose != null) {
+            setPos(pose[0], pose[1], pose[2]);
+            setRotation((float) pose[3], (float) pose[4]);
             this.thirdPerson = true;
         }
     }

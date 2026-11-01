@@ -117,6 +117,8 @@ public class ModuleList extends HudElement {
 
     private boolean shouldRender(Module m) {
         return m.isDrawn()
+                // LearnAI runs in the background all the time - it is not something to show off in the list
+                && !(m instanceof thunder.hack.features.modules.misc.LearnAI)
                 && (!hrender.getValue() || m.getCategory() != Category.RENDER)
                 && (!hhud.getValue() || m.getCategory() != Category.HUD);
     }

@@ -27,6 +27,8 @@ public final class TitleClock {
     private static long since;
     /** When the title went idle (paused), 0 while playing. */
     private static long pausedAt;
+    /** The last browser session we accepted as a Spotify song - it stays trusted while paused. */
+    private static String acceptedKey = "";
 
     private static void poll() {
         long now = System.currentTimeMillis();
@@ -84,11 +86,17 @@ public final class TitleClock {
         // and nothing at all was shown. Split the title first, then judge the song.
         NowPlaying.Track track = trackOf(state);
         if (track == null || track.artist().isBlank()) return null;
+        String trackKey = track.artist() + " - " + track.title();
+        // PAUSED, but it is the very song we already accepted as Spotify: keep trusting it. Rejecting every
+        // paused browser session (the check below) dropped us onto the window-title clock, which cannot see a
+        // pause - so the time kept running while the song was stopped.
+        if (!state.playing() && trackKey.equals(acceptedKey)) return state;
         if (!state.playing() || state.duration() < 45_000L) return null;
 
         String text = (track.title() + " " + track.artist()).toLowerCase(Locale.ROOT);
         for (String noise : NOISE)
             if (text.contains(noise)) return null;
+        acceptedKey = trackKey;
         return state;
     }
 

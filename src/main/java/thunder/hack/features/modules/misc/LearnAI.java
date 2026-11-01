@@ -59,11 +59,13 @@ import java.util.Random;
 public class LearnAI extends Module {
     public LearnAI() {
         super("LearnAI", Category.MISC);
+        // the game closing does not always switch modules off - save what was learned on the way out too
+        Runtime.getRuntime().addShutdownHook(new Thread(this::save, "LearnAI-save"));
     }
 
     private final Setting<Boolean> panel = new Setting<>("Panel", true);
     /** How fast new experience overwrites old: higher learns quicker but forgets quicker. */
-    private final Setting<Float> learnRate = new Setting<>("LearnRate", 0.15f, 0.02f, 0.8f);
+    private final Setting<Float> learnRate = new Setting<>("LearnRate", 0.3f, 0.02f, 0.8f);
     /** How far it looks for monsters, in blocks. */
     private final Setting<Float> range = new Setting<>("Range", 16f, 4f, 32f);
     /** Eat from the hotbar when health runs low. */
@@ -101,13 +103,16 @@ public class LearnAI extends Module {
     private int[][] visits = new int[STATES][ACTIONS.length];
 
     private static final float GAMMA = 0.9f;
-    private static final int DECIDE_TICKS = 4;
+    /** A decision every other tick: twice the experience per minute of fighting. */
+    private static final int DECIDE_TICKS = 2;
+    /** Only this kind of creature when set ("zabij owcę"); null: anything alive. */
+    private net.minecraft.entity.EntityType<?> fightType;
 
     /* ------------------------------------------------------------------ */
     /* Replay memory                                                       */
     /* ------------------------------------------------------------------ */
 
-    private static final int MEMORY = 4000, REPLAY = 24;
+    private static final int MEMORY = 6000, REPLAY = 64;
     private final int[] memS = new int[MEMORY], memA = new int[MEMORY], memNext = new int[MEMORY];
     private final float[] memR = new float[MEMORY];
     private int memCount, memHead;
@@ -149,6 +154,11 @@ public class LearnAI extends Module {
     private final Random random = new Random();
     private long lastSave;
 
+    /** Walking, mining and building on plain orders. */
+    private final AiTasks tasks = new AiTasks(this::reply);
+    /** Whether the agent is holding the movement keys / the use key - so it only lets go of what it pressed. */
+    private boolean movementHeld, useHeld;
+
     @Override
     public void onEnable() {
         load();
@@ -186,6 +196,43 @@ public class LearnAI extends Module {
     /* Chat                                                                */
     /* ------------------------------------------------------------------ */
 
+    /** A "did you mean" waiting for its yes or no. */
+    private AiLanguage.Intent pendingIntent;
+    private String pendingSentence = "";
+
+    /** What an understood sentence means as one of the plain orders the rest of the agent reads. */
+    private static String canonical(AiLanguage.Intent intent, String s) {
+        return switch (intent) {
+            case Go -> "idz " + s;
+            case Village -> "idz do wioski";
+            case Craft -> "zrob " + s;
+            case Smelt -> "przetop " + s;
+            case Sleep -> "idz spac";
+            case Store -> "schowaj rzeczy do skrzyni";
+            case Farm -> "farma";
+            case Record -> "nagrywaj";
+            case Replay -> "powtorz";
+            case Wander -> "idz gdzies";
+            case Back -> "wroc";
+            case Mine -> "wykop " + s;
+            case Hut -> "zbuduj domek";
+            case Wall -> "zbuduj sciane " + s.replaceAll("[^0-9 ]", " ");
+            case Pillar -> "zbuduj slup " + s.replaceAll("[^0-9 ]", " ");
+            case Fight -> "walcz " + s;
+            case Stop -> "stop";
+            case Learn -> "ucz sie";
+            case Stats -> "statystyki";
+            case Explain -> "czego sie nauczyles";
+            case Reset -> "reset";
+            case Use -> "klikaj prawym";
+            case Eat -> "zjedz";
+            case On -> "wlacz " + s;
+            case Off -> "wylacz " + s;
+            case Change -> "zmien " + s;
+            default -> s;
+        };
+    }
+
     /** A chat line addressed to the agent (the part after "ai "). */
     public void onChat(String raw) {
         log(true, raw.strip());
@@ -194,14 +241,63 @@ public class LearnAI extends Module {
             reply("Na serwerach mam wyłączone - włącz opcję \"Servers\" w ustawieniach modułu.");
             return;
         }
-        String msg = raw.toLowerCase(Locale.ROOT).strip()
-                .replace('ą', 'a').replace('ę', 'e').replace('ś', 's').replace('ć', 'c')
-                .replace('ł', 'l').replace('ó', 'o').replace('ż', 'z').replace('ź', 'z').replace('ń', 'n');
+        String msg = AiTasks.normalize(raw);
+        // while recording, "koniec" / "stop" ends the recording rather than stopping anything else
+        if (tasks.recording() && msg.matches(".*\\b(koniec|stop|wystarczy|zakoncz|nagryw)\\w*.*")) {
+            reply("Koniec nagrywania: " + tasks.stopRecording() + " s. Napisz \"powtórz\", a zrobię to samo.");
+            return;
+        }
+
+        // the answer to its own "did you mean ...?": a yes teaches it the sentence for good
+        if (pendingIntent != null) {
+            AiLanguage.Intent was = pendingIntent;
+            String sentence = pendingSentence;
+            pendingIntent = null;
+            if (msg.matches("(tak|ta|yes|no tak|dokladnie|zgadza sie|yhm|aha|mhm|jasne|oczywiscie)\\b.*")) {
+                AiLanguage.learn(sentence, was);
+                reply("Zapamiętałem: \"" + sentence + "\" to " + was.label + ". Następnym razem zrozumiem od razu.");
+                msg = canonical(was, sentence);
+            } else if (msg.matches("(nie|no|nope|zle|nie o to)\\b.*")) {
+                reply("Dobra, napisz to inaczej - spróbuję zrozumieć.");
+                return;
+            }
+        } else {
+            // own language understanding: any sentence, typos and glued words included, becomes a plain order
+            AiLanguage.Meaning m = AiLanguage.understand(msg);
+            if (m.confidence() < 0.5) {
+                pendingIntent = m.intent();
+                pendingSentence = m.sentence();
+                reply("Nie jestem pewien, o co chodzi. Chodziło ci o: " + m.intent().label + "? (tak/nie)");
+                return;
+            }
+            switch (m.intent()) {
+                case Hello, Thanks, HowAreYou -> {
+                    reply(AiLanguage.smallTalk(m.intent()));
+                    return;
+                }
+                default -> msg = canonical(m.intent(), m.sentence());
+            }
+        }
+        // plain orders first: walking, mining, building ("idź 2 kratki", "wykop 8 diamentów", "zbuduj domek")
+        if (!msg.matches(".*(stop|stoj|przestan|koniec|spokoj).*")) {
+            String answer = tasks.tryStart(msg);
+            if (answer != null) {
+                mode = Mode.Idle;
+                reply(answer);
+                return;
+            }
+        }
         if (msg.matches(".*(walcz|bij|atak|fight|zabij|polu).*")) {
+            tasks.stop();
             mode = Mode.Fight;
-            reply(steps < 2000 ? "Walczę! Na początku będę się mylił - uczę się na błędach." : "Walczę. Zobaczymy, ile się nauczyłem.");
+            // "zabij owcę", "bij tylko krowy": just that kind; plain "walcz": anything alive
+            fightType = AiTasks.creatureNamed(msg);
+            if (mc.player != null) wieldWeapon();   // into the fight sword in hand
+            reply((fightType != null ? "Biję: " + fightType.getName().getString().toLowerCase(Locale.ROOT) + ". " : "")
+                    + (steps < 2000 ? "Walczę! Na początku będę się mylił - uczę się na błędach." : "Walczę. Zobaczymy, ile się nauczyłem."));
         } else if (msg.matches(".*(stop|stoj|przestan|koniec|spokoj).*")) {
             mode = Mode.Idle;
+            tasks.stop();
             releaseMovement();
             reply("Stoję.");
         } else if (msg.matches(".*(prawy|prawym|uzywaj|blok|tarcz).*")) {
@@ -221,18 +317,27 @@ public class LearnAI extends Module {
         } else if (msg.matches(".*(stat|ile|wynik|postep).*")) {
             reply(String.format(Locale.ROOT, "Decyzje: %d, pokonane moby: %d, ciosy krytyczne: %d, śmierci: %d, średnia nagroda: %.2f, ciekawość: %d%%",
                     steps, kills, crits, deaths, avgReward, Math.round(epsilon() * 100)));
+            reply(tasks.skills());
         } else if (msg.matches(".*(czego|nauczyl|wiesz|strategi|jak walczysz).*")) {
             explain();
         } else if (msg.matches(".*(reset|zapomnij|od nowa).*")) {
             q = new float[STATES][ACTIONS.length];
             visits = new int[STATES][ACTIONS.length];
+            prime();
             steps = kills = deaths = crits = 0;
             avgReward = 0f;
             memCount = memHead = 0;
             curveLen = 0;
-            reply("Zapomniałem wszystko. Uczę się od zera.");
+            reply("Zapomniałem wszystko, co sam odkryłem - została mi tylko wiedza startowa.");
         } else {
-            reply("Komendy: \"ai walcz\", \"ai stop\", \"ai klikaj prawym\", \"ai ucz sie\", \"ai statystyki\", \"ai czego sie nauczyles\", \"ai serwery\", \"ai reset\".");
+            // orders about the client itself: "włącz fullbright", "zmień sky", "wyłącz trail"
+            String control = AiTasks.control(msg);
+            if (control != null) {
+                reply(control);
+                return;
+            }
+            reply("Nie zrozumiałem. Możesz napisać np.: \"idź 2 kratki do przodu\", \"idź gdzieś\", \"wykop 8 diamentów\", \"zetnij 10 drewna\", "
+                    + "\"zbuduj domek\", \"zbuduj słup 5\", \"wróć\", \"walcz\", \"ucz się\", \"zmień niebo\", \"włącz fullbright\", \"stop\".");
         }
     }
 
@@ -272,6 +377,8 @@ public class LearnAI extends Module {
     @Override
     public void onUpdate() {
         if (fullNullCheck()) return;
+        // recording the player ("nagrywaj"): every tick, whatever else is going on
+        tasks.recordTick();
         // a server the user did not allow: hands off the keys, no fighting
         if (!allowed()) {
             if (mode == Mode.Fight) {
@@ -280,9 +387,44 @@ public class LearnAI extends Module {
             }
             return;
         }
-        mc.options.useKey.setPressed(holdUse || (lastAction == Action.Eat && eating()));
+        // The use key is only ever held, never forced up every tick - that took right click away from the player.
+        boolean wantUse = holdUse || (lastAction == Action.Eat && eating());
+        if (wantUse) {
+            mc.options.useKey.setPressed(true);
+            useHeld = true;
+        } else if (useHeld) {
+            mc.options.useKey.setPressed(false);
+            useHeld = false;
+        }
 
-        if (System.currentTimeMillis() - lastSave > 60_000L) save();
+        // Playing on its own ("ucz się" / "graj sam"): it explores and practises, and when a monster comes close it
+        // drops what it is doing and fights, then goes back to it.
+        if (tasks.active() && tasks.learning() && mc.isInSingleplayer()) {
+            boolean threat = nearestThreat(10) != null;
+            if (threat && !autoFight) {
+                tasks.release();
+                mode = Mode.Fight;
+                autoFight = true;
+                if (chatty.getValue()) reply("Potwór! Walczę.");
+            } else if (!threat && autoFight) {
+                mode = Mode.Idle;
+                autoFight = false;
+                releaseMovement();
+            }
+            if (!autoFight) {
+                tasks.tick();
+                return;
+            }
+        } else if (tasks.active()) {
+            // a task (walking, mining, building) has the controls while it runs
+            tasks.tick();
+            return;
+        } else if (autoFight) {
+            autoFight = false;
+            mode = Mode.Idle;
+        }
+
+        if (System.currentTimeMillis() - lastSave > 15_000L) save();
 
         if (mc.player.isDead() || mc.player.getHealth() <= 0f) {
             clearPending();
@@ -300,10 +442,13 @@ public class LearnAI extends Module {
             releaseMovement();
             // a swing sent before the "stop" is still scored when its damage arrives
             if (pendingState >= 0) resolveHit(-1);
+            // while the player fights by hand, it watches and learns from them
+            if (mc.isInSingleplayer()) observePlayer();
             return;
         }
 
-        target = nearestMonster();
+        // playing alone it fights the monster that came at it, not the nearest sheep
+        target = autoFight ? nearestThreat(16) : nearestMonster();
         int state = target == null ? -1 : encode(target);
         // a swing is scored here, as soon as the damage it caused has arrived - not one decision later, which
         // on a server is long before the answer comes back
@@ -319,6 +464,9 @@ public class LearnAI extends Module {
 
         // always face the target - WHAT to do about it is what gets learned
         lookAt(target, 0.35f);
+
+        // instincts before any learned move: shield up, bow at range, run when nearly dead with nothing to eat
+        if (combatInstinct()) return;
 
         if (++ticks % DECIDE_TICKS != 0) {
             perform(lastAction);
@@ -371,14 +519,71 @@ public class LearnAI extends Module {
     private void replay() {
         if (memCount < 50) return;
         for (int i = 0; i < REPLAY; i++) {
+            // half the replays favour the steps that mattered - big rewards and big penalties teach most
             int k = random.nextInt(memCount);
+            if ((i & 1) == 0) {
+                int other = random.nextInt(memCount);
+                if (Math.abs(memR[other]) > Math.abs(memR[k])) k = other;
+            }
             update(memS[k], memA[k], memR[k], memNext[k]);
         }
     }
 
     private void update(int s, int a, float r, int next) {
         float future = next < 0 ? 0f : max(q[next]);
-        q[s][a] += learnRate.getValue() * (r + GAMMA * future - q[s][a]);
+        Action before = best(s);
+        float delta = learnRate.getValue() * (r + GAMMA * future - q[s][a]);
+        q[s][a] += delta;
+        generalize(s, a, delta);
+        Action after = best(s);
+        // its own experience just overruled what it thought best here: say so, so the learning can be seen
+        if (after != before && chatty.getValue() && System.currentTimeMillis() - lastLesson > 15_000L) {
+            lastLesson = System.currentTimeMillis();
+            reply("Nauczyłem się: " + describeState(s) + " lepiej \"" + after.label + "\" niż \"" + before.label + "\".");
+        }
+    }
+
+    private long lastLesson;
+
+    /**
+     * Shares a lesson with the situations that only differ in details that hardly change what to do - the mob
+     * standing on another side, or having just been hit or not - at a quarter strength. One fight then teaches
+     * many situations at once instead of each having to be lived through on its own.
+     */
+    private void generalize(int s, int a, float delta) {
+        int hurt = s % HURT;
+        int rest = s / HURT;
+        int health = rest % HEALTH;
+        rest /= HEALTH;
+        int charged = rest % CHARGED;
+        rest /= CHARGED;
+        int kind = rest % KIND;
+        rest /= KIND;
+        int angle = rest % ANGLE;
+        int dist = rest / ANGLE;
+        for (int ang = 0; ang < ANGLE; ang++)
+            for (int h = 0; h < HURT; h++) {
+                if (ang == angle && h == hurt) continue;
+                q[encode(dist, ang, kind, charged, health, h)][a] += delta * 0.25f;
+            }
+    }
+
+    /** A situation in words, decoded from its table index. */
+    private static String describeState(int s) {
+        int hurt = s % HURT;
+        s /= HURT;
+        int health = s % HEALTH;
+        s /= HEALTH;
+        int charged = s % CHARGED;
+        s /= CHARGED;
+        int kind = s % KIND;
+        s /= KIND;
+        s /= ANGLE;
+        int dist = s;
+        String mob = kind == 1 ? "creeper" : kind == 2 ? "mob strzelający" : "mob";
+        String where = dist == 0 ? "tuż obok" : dist == 1 ? "blisko" : dist == 2 ? "kilka kratek dalej" : "daleko";
+        return mob + " " + where + (charged == 1 ? ", cios naładowany" : ", cios się ładuje")
+                + (health == 2 ? ", mało życia" : "") + (hurt == 1 ? ", oberwałem" : "") + " -";
     }
 
     private void record(float reward) {
@@ -397,7 +602,148 @@ public class LearnAI extends Module {
      * Mostly the best known move, sometimes a random one - less often the more it has learned. A move never tried
      * in this situation gets a small bonus, so it does not settle before it has tried things.
      */
+    /* ---- combat instincts: things a decent player just does ---- */
+
+    private boolean shieldUp;
+    private int bowDraw;
+
+    /**
+     * Instincts that come before any learned move. Shield up (from the off hand) when a creeper next to it is
+     * hissing or an archer is drawing on it; the bow when a monster keeps its distance; running when it is down to
+     * three hearts with nothing to eat. Returns true while an instinct has the controls this tick.
+     */
+    private boolean combatInstinct() {
+        double dist = mc.player.distanceTo(target);
+
+        // run: nearly dead and nothing to eat - back off until it has healed a little
+        if (mc.player.getHealth() <= 6f && !canEat()) {
+            dropShield();
+            perform(Action.Retreat);
+            mc.options.sprintKey.setPressed(true);
+            return true;
+        }
+
+        // shield: a creeper about to go off, or an archer drawing its bow
+        boolean hasShield = mc.player.getOffHandStack().isOf(net.minecraft.item.Items.SHIELD);
+        boolean creeperHiss = target instanceof CreeperEntity c && dist < 4.5 && c.getFuseSpeed() > 0;
+        boolean archerAims = target instanceof RangedAttackMob && target.isUsingItem() && dist > 3.5 && dist < 20;
+        if (hasShield && (creeperHiss || archerAims)) {
+            if (!shieldUp) {
+                releaseMovement();
+                shieldUp = true;
+            }
+            mc.options.useKey.setPressed(true);
+            useHeld = true;
+            if (creeperHiss) {
+                // shield up AND step back from the blast
+                mc.options.backKey.setPressed(true);
+                movementHeld = true;
+            }
+            return true;
+        }
+        dropShield();
+
+        // bow: a monster out of reach - shoot it, with a little lift for the arrow's drop
+        int bow = -1;
+        for (int i = 0; i < 9; i++) if (mc.player.getInventory().getStack(i).isOf(net.minecraft.item.Items.BOW)) bow = i;
+        boolean arrows = mc.player.getInventory().contains(new net.minecraft.item.ItemStack(net.minecraft.item.Items.ARROW));
+        if (bow >= 0 && arrows && dist > 8 && dist < 40) {
+            if (mc.player.getInventory().selectedSlot != bow) InventoryUtility.switchTo(bow);
+            releaseMovement();
+            float lift = (float) (dist * dist * 0.006);
+            double dx = target.getX() - mc.player.getX(), dz = target.getZ() - mc.player.getZ();
+            double dy = target.getEyeY() + lift - mc.player.getEyeY();
+            mc.player.setYaw((float) Math.toDegrees(Math.atan2(dz, dx)) - 90f);
+            mc.player.setPitch((float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz))));
+            mc.options.useKey.setPressed(true);
+            useHeld = true;
+            if (++bowDraw >= 22) {
+                // full draw: let go - the arrow flies
+                mc.options.useKey.setPressed(false);
+                mc.interactionManager.stopUsingItem(mc.player);
+                bowDraw = 0;
+            }
+            return true;
+        }
+        if (bowDraw > 0) {
+            mc.options.useKey.setPressed(false);
+            bowDraw = 0;
+        }
+        return false;
+    }
+
+    private void dropShield() {
+        if (!shieldUp) return;
+        shieldUp = false;
+        mc.options.useKey.setPressed(false);
+        useHeld = false;
+    }
+
+    /** Fighting because a monster turned up while it was playing on its own - not because it was told to. */
+    private boolean autoFight;
+
+    /** The nearest monster within {@code range} blocks - what makes it stop and fight while playing alone. */
+    private LivingEntity nearestThreat(double range) {
+        LivingEntity best = null;
+        double bestDist = range * range;
+        for (Entity e : mc.world.getEntities())
+            if (e instanceof Monster && e instanceof LivingEntity l && l.isAlive()) {
+                double d = mc.player.squaredDistanceTo(e);
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = l;
+                }
+            }
+        return best;
+    }
+
+    /* ---- learning by watching the player ---- */
+
+    private int watchTick, watched;
+
+    /**
+     * While the player fights a mob by hand, the agent watches: it reads the situation the same way it reads its
+     * own, works out from the keys which move the player made - stepping in, striking, a jump crit, circling,
+     * backing off, eating - and takes that move as a good one for that situation. What a person does is its
+     * best teacher; its own fights then refine it.
+     */
+    private void observePlayer() {
+        if (++watchTick % DECIDE_TICKS != 0) return;
+        LivingEntity t = nearestThreat(7);
+        if (t == null) return;
+        boolean attacking = mc.options.attackKey.isPressed();
+        boolean moving = mc.options.forwardKey.isPressed() || mc.options.backKey.isPressed()
+                || mc.options.leftKey.isPressed() || mc.options.rightKey.isPressed();
+        if (!attacking && !moving && !mc.player.isUsingItem()) return;
+        Action a = playerMove(attacking);
+        int s = encode(t);
+        float delta = learnRate.getValue() * 0.5f * (1.2f - q[s][a.ordinal()]);
+        q[s][a.ordinal()] += delta;
+        generalize(s, a.ordinal(), delta);
+        visits[s][a.ordinal()]++;
+        if (++watched % 150 == 1 && chatty.getValue())
+            reply("Patrzę, jak walczysz, i uczę się od ciebie (" + watched + " podpatrzonych ruchów).");
+    }
+
+    /** The player's move this moment, read from their keys and their motion. */
+    private Action playerMove(boolean attacking) {
+        if (mc.player.isUsingItem() && mc.player.getActiveItem().getComponents().contains(DataComponentTypes.FOOD)) return Action.Eat;
+        if (attacking && !mc.player.isOnGround() && mc.player.getVelocity().y < 0) return Action.CritJump;
+        if (attacking) return Action.Strike;
+        boolean f = mc.options.forwardKey.isPressed(), b = mc.options.backKey.isPressed();
+        boolean l = mc.options.leftKey.isPressed(), r = mc.options.rightKey.isPressed();
+        if (b) return Action.Retreat;
+        if (f && l) return Action.CircleLeft;
+        if (f && r) return Action.CircleRight;
+        if (l) return Action.StrafeLeft;
+        if (r) return Action.StrafeRight;
+        if (f) return Action.Approach;
+        return Action.Wait;
+    }
+
     private Action choose(int state) {
+        // instinct, not a choice: four hearts or less and food in the hotbar - eat
+        if (mc.player.getHealth() <= 8f && canEat()) return Action.Eat;
         if (random.nextFloat() < epsilon()) {
             Action a = ACTIONS[random.nextInt(ACTIONS.length)];
             return a == Action.Eat && !canEat() ? Action.Wait : a;
@@ -439,8 +785,10 @@ public class LearnAI extends Module {
         LivingEntity best = null;
         double bestDist = range.getValue() * range.getValue();
         for (Entity e : mc.world.getEntities()) {
-            // monsters only: players are never a target
-            if (!(e instanceof Monster) || !(e instanceof LivingEntity living) || !living.isAlive()) continue;
+            // anything alive - animals too - except armor stands and players (never a player)
+            if (!(e instanceof LivingEntity living) || !living.isAlive() || e == mc.player
+                    || e instanceof net.minecraft.entity.decoration.ArmorStandEntity || e instanceof net.minecraft.entity.player.PlayerEntity) continue;
+            if (fightType != null && e.getType() != fightType) continue;
             double d = mc.player.squaredDistanceTo(e);
             if (d < bestDist) {
                 bestDist = d;
@@ -467,6 +815,61 @@ public class LearnAI extends Module {
         float hp = mc.player.getHealth();
         int health = hp > 14 ? 0 : hp > 7 ? 1 : 2;
         return encode(dist, angle, kind, charged() ? 1 : 0, health, mc.player.hurtTime > 0 ? 1 : 0);
+    }
+
+    /**
+     * Starting knowledge: what a player who knows the basics would do, written into the table as modest scores so
+     * the agent starts out competent - and its own experience can still overrule every one of them.
+     *
+     * <p>In reach with a charged swing: jump and crit, or a plain hit. Swing still charging: circle and wait for
+     * it. Far off: close in. A creeper close by: back off and sidestep. An archer: zigzag in. Low on health and
+     * being hit: eat or pull back.
+     */
+    private void prime() {
+        for (int dist = 0; dist < DIST; dist++)
+            for (int angle = 0; angle < ANGLE; angle++)
+                for (int kind = 0; kind < KIND; kind++)
+                    for (int charged = 0; charged < CHARGED; charged++)
+                        for (int health = 0; health < HEALTH; health++)
+                            for (int hurt = 0; hurt < HURT; hurt++) {
+                                float[] row = q[encode(dist, angle, kind, charged, health, hurt)];
+                                java.util.Arrays.fill(row, 0f);
+                                boolean near = dist <= 1, inReach = dist == 0, low = health == 2;
+
+                                if (kind == 1 && near) {                       // creeper up close: get away
+                                    row[Action.Retreat.ordinal()] = 1.2f;
+                                    row[Action.StrafeLeft.ordinal()] = 0.6f;
+                                    row[Action.StrafeRight.ordinal()] = 0.6f;
+                                    if (charged == 1 && inReach && !low) row[Action.Strike.ordinal()] = 0.7f;
+                                    continue;
+                                }
+                                if (low && hurt == 1) {                        // in trouble: heal or back off
+                                    row[Action.Eat.ordinal()] = 1.1f;
+                                    row[Action.Retreat.ordinal()] = 0.8f;
+                                }
+                                if (inReach) {
+                                    if (charged == 1) {
+                                        row[Action.CritJump.ordinal()] = Math.max(row[Action.CritJump.ordinal()], 1.0f);
+                                        row[Action.Strike.ordinal()] = Math.max(row[Action.Strike.ordinal()], 0.85f);
+                                    } else {
+                                        row[Action.CircleLeft.ordinal()] = 0.45f;
+                                        row[Action.CircleRight.ordinal()] = 0.45f;
+                                        row[Action.Wait.ordinal()] = 0.35f;
+                                    }
+                                } else if (dist == 1) {
+                                    row[Action.Approach.ordinal()] = 0.6f;
+                                    if (charged == 1) row[Action.CritJump.ordinal()] = Math.max(row[Action.CritJump.ordinal()], 0.65f);
+                                } else {
+                                    row[Action.Approach.ordinal()] = Math.max(row[Action.Approach.ordinal()], 0.7f);
+                                    if (kind == 2) {                           // an archer: come in zigzagging
+                                        row[Action.CircleLeft.ordinal()] = 0.6f;
+                                        row[Action.CircleRight.ordinal()] = 0.6f;
+                                    }
+                                }
+                                if (low && !inReach) row[Action.Eat.ordinal()] = Math.max(row[Action.Eat.ordinal()], 0.9f);
+                            }
+        // the starting knowledge counts as tried once, so the agent does not rush to re-test all of it
+        for (int[] v : visits) java.util.Arrays.fill(v, 1);
     }
 
     private static int encode(int dist, int angle, int kind, int charged, int health, int hurt) {
@@ -519,6 +922,7 @@ public class LearnAI extends Module {
     /* ------------------------------------------------------------------ */
 
     private void perform(Action a) {
+        movementHeld = true;
         boolean fwd = a == Action.Approach || a == Action.Strike || a == Action.CritJump || a == Action.CircleLeft || a == Action.CircleRight;
         boolean back = a == Action.Retreat;
         boolean left = a == Action.StrafeLeft || a == Action.CircleLeft;
@@ -548,8 +952,38 @@ public class LearnAI extends Module {
         hit(crit);
     }
 
+    /**
+     * The best weapon in the hotbar: a sword before an axe (faster swings), and within each the better material.
+     * -1 when there is no weapon at all.
+     */
+    private int bestWeaponSlot() {
+        int best = -1, bestScore = 0;
+        for (int i = 0; i < 9; i++) {
+            var stack = mc.player.getInventory().getStack(i);
+            if (stack.isEmpty()) continue;
+            String id = net.minecraft.registry.Registries.ITEM.getId(stack.getItem()).getPath();
+            int kind = id.endsWith("_sword") ? 100 : id.endsWith("_axe") ? 60 : id.equals("trident") || id.equals("mace") ? 50 : 0;
+            if (kind == 0) continue;
+            int tier = id.startsWith("netherite") ? 6 : id.startsWith("diamond") ? 5 : id.startsWith("iron") ? 4
+                    : id.startsWith("copper") || id.startsWith("stone") ? 3 : id.startsWith("golden") ? 2 : 1;
+            int score = kind + tier * 5;
+            if (score > bestScore) {
+                bestScore = score;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /** Takes the best weapon in hand before a swing - it remembers to fight with the sword. */
+    private void wieldWeapon() {
+        int slot = bestWeaponSlot();
+        if (slot >= 0 && mc.player.getInventory().selectedSlot != slot) InventoryUtility.switchTo(slot);
+    }
+
     private void hit(boolean crit) {
         snap(target);
+        wieldWeapon();
         mc.interactionManager.attackEntity(mc.player, target);
         mc.player.swingHand(Hand.MAIN_HAND);
         // the damage is scored when it arrives, not now: see resolveHit
@@ -663,8 +1097,13 @@ public class LearnAI extends Module {
         key.setPressed(down);
     }
 
+    /**
+     * Lets go of the movement keys - but only if the agent is the one holding them. Called every idle tick, it
+     * used to force them up every tick, which froze the player in place whenever the agent was not fighting.
+     */
     private void releaseMovement() {
-        if (mc.options == null) return;
+        if (mc.options == null || !movementHeld) return;
+        movementHeld = false;
         set(mc.options.forwardKey, false);
         set(mc.options.backKey, false);
         set(mc.options.leftKey, false);
@@ -689,6 +1128,8 @@ public class LearnAI extends Module {
     @Override
     public void onRender2D(DrawContext context) {
         if (!panel.getValue() || fullNullCheck()) return;
+        // only while it is actually doing something it was told to - idle, the screen stays clean
+        if (mode != Mode.Fight && !tasks.active() && !tasks.recording()) return;
         var font = FontRenderers.sf_medium_mini;
         boolean fighting = mode == Mode.Fight && target != null;
         String[] lines = {
@@ -755,10 +1196,14 @@ public class LearnAI extends Module {
     /* ------------------------------------------------------------------ */
 
     private static File file() {
-        return new File(ConfigManager.MISC_FOLDER, "learnai_v2.txt");
+        return new File(ConfigManager.MISC_FOLDER, "learnai_v3.txt");
     }
 
+    /** Whether the knowledge was read from disk this session - never write an empty table over the real one. */
+    private boolean loaded;
+
     private void save() {
+        if (!loaded) return;
         lastSave = System.currentTimeMillis();
         try {
             StringBuilder sb = new StringBuilder();
@@ -770,13 +1215,87 @@ public class LearnAI extends Module {
             }
             Files.createDirectories(file().getParentFile().toPath());
             Files.writeString(file().toPath(), sb.toString(), StandardCharsets.UTF_8);
+            saveCurve();
         } catch (Exception ignored) {
         }
     }
 
     private void load() {
+        if (loaded) return;
+        loaded = true;
+        loadCurrent();
+        migrateOld();
+        loadCurve();
+    }
+
+    /**
+     * Folds the older knowledge file (learnai_v2, from before the starting knowledge) into this one, so nothing
+     * learned is lost: the counters add up, and for every situation the two tables are averaged by how often each
+     * tried it. The old file is then renamed so it is never counted twice.
+     */
+    private void migrateOld() {
+        File old = new File(ConfigManager.MISC_FOLDER, "learnai_v2.txt");
+        if (!old.exists()) return;
         try {
-            if (!file().exists()) return;
+            String[] rows = Files.readString(old.toPath(), StandardCharsets.UTF_8).split("\n");
+            String[] head = rows[0].trim().split(" ");
+            steps += Long.parseLong(head[0]);
+            kills += Integer.parseInt(head[1]);
+            deaths += Integer.parseInt(head[2]);
+            crits += Integer.parseInt(head[3]);
+            for (int s = 0; s < STATES && s + 1 < rows.length; s++) {
+                String[] v = rows[s + 1].trim().split(" ");
+                for (int a = 0; a < ACTIONS.length && a < v.length; a++) {
+                    String[] pv = v[a].split(":");
+                    float oq = Float.parseFloat(pv[0]);
+                    int ov = pv.length > 1 ? Integer.parseInt(pv[1]) : 0;
+                    if (ov <= 0) continue;
+                    int nv = visits[s][a];
+                    q[s][a] = (q[s][a] * nv + oq * ov) / (nv + ov);
+                    visits[s][a] = nv + ov;
+                }
+            }
+            Files.move(old.toPath(), new File(ConfigManager.MISC_FOLDER, "learnai_v2.migrated").toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            save();
+            reply("Wczytałem też moją starszą naukę - wszystko połączone, nic nie przepadło.");
+        } catch (Exception ignored) {
+        }
+    }
+
+    /* the learning curve on the panel, kept across sessions too */
+    private static File curveFile() {
+        return new File(ConfigManager.MISC_FOLDER, "learnai_curve.txt");
+    }
+
+    private void saveCurve() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < curveLen; i++) sb.append(i == 0 ? "" : " ").append(curve[i]);
+            Files.writeString(curveFile().toPath(), sb.toString(), StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadCurve() {
+        try {
+            if (!curveFile().exists()) return;
+            String[] v = Files.readString(curveFile().toPath(), StandardCharsets.UTF_8).trim().split(" ");
+            curveLen = 0;
+            for (String s : v) {
+                if (s.isBlank() || curveLen >= curve.length) continue;
+                curve[curveLen++] = Float.parseFloat(s);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadCurrent() {
+        try {
+            if (!file().exists()) {
+                prime();
+                return;
+            }
             String[] rows = Files.readString(file().toPath(), StandardCharsets.UTF_8).split("\n");
             String[] head = rows[0].trim().split(" ");
             steps = Long.parseLong(head[0]);

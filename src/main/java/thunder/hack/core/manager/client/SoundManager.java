@@ -163,6 +163,27 @@ public class SoundManager implements IManager {
         }
     }
 
+    private long lastTyping;
+
+    /**
+     * A soft key click for typing in the client's screens. Played as a UI sound, so it works in menus with no
+     * world too; the pitch wanders a little per key so fast typing sounds like a keyboard, not a machine gun.
+     */
+    public void playTyping() {
+        try {
+            if (!ModuleManager.soundFX.typingSound.getValue()) return;
+            long now = System.currentTimeMillis();
+            if (now - lastTyping < 25) return; // key repeat / two events for one press
+            lastTyping = now;
+            float volume = ModuleManager.soundFX.volume.getValue() / 100f * 0.55f;
+            if (volume <= 0.01f) return;
+            float pitch = 0.92f + (float) Math.random() * 0.16f;
+            mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.ui(KEYPRESS_SOUNDEVENT, pitch, volume));
+        } catch (Throwable ignored) {
+            // a sound is decoration - never let it eat a keystroke
+        }
+    }
+
     public void playSound(SoundEvent sound) {
         if (mc.player != null && mc.world != null)
             mc.world.playSound(mc.player, mc.player.getBlockPos(), sound, SoundCategory.BLOCKS, (float) ModuleManager.soundFX.volume.getValue() / 100f, 1f);

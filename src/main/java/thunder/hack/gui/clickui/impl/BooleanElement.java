@@ -22,6 +22,7 @@ public class BooleanElement extends AbstractElement {
 
     float animation = 0f;
     float animation2 = 0f;
+    float hoverAnim = 0f;
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
@@ -30,13 +31,24 @@ public class BooleanElement extends AbstractElement {
         // Pill track, round knob, nothing else. The control used to be three stacked squares - a nearly
         // square track (radius 1), the knob drawn twice for the animation, and a v / x letter printed on
         // top of the knob - which is what made the module settings look like a wall of little boxes.
-        animation = fast(animation, (boolean) setting.getValue() ? 1 : 0, 20f);
-        animation2 = fast(animation2, (boolean) setting.getValue() ? 1 : 0, 8f);
+        boolean on = (boolean) setting.getValue();
+        boolean trackHover = Render2DEngine.isHovered(mouseX, mouseY, x + width - 21, y + height / 2 - 4, 15, 8);
+        animation = fast(animation, on ? 1 : 0, 14f);
+        animation2 = fast(animation2, on ? 1 : 0, 9f);
+        hoverAnim = fast(hoverAnim, trackHover ? 1 : 0, 16f);
+        // the track colour cross-fades (it used to flip at a threshold), with a soft accent glow when on
+        Color accent = HudEditor.getColor(0);
+        if (animation > 0.02f)
+            Render2DEngine.drawBlurredShadow(context, x + width - 21, y + height / 2 - 4, 15, 8, 6,
+                    Render2DEngine.injectAlpha(accent, (int) (60 * animation)));
         Render2DEngine.drawRound(context, x + width - 21, y + height / 2 - 4, 15, 8, 4f,
-                7f * animation > 4 ? HudEditor.getColor(0) : new Color(0x28FFFFFF, true));
-        Render2DEngine.drawRound(context, x + width - 20 + 7f * animation2, y + height / 2 - 3, 6, 6, 3f, new Color(-1));
+                Render2DEngine.interpolateColorC(new Color(255, 255, 255, (int) (40 + 25 * hoverAnim)), accent, animation));
+        // knob springs across with a little overshoot, and swells while the mouse is on it
+        float knobT = (float) Math.min(1.1, Math.max(-0.1, thunder.hack.utility.render.animation.EaseOutBack.dropAnimation(animation2)));
+        float k = 6f + 1f * hoverAnim;
+        Render2DEngine.drawRound(context, x + width - 20 + 7f * knobT - (k - 6f) / 2f, y + height / 2 - 3 - (k - 6f) / 2f, k, k, k / 2f, new Color(-1));
 
-        if (Render2DEngine.isHovered(mouseX, mouseY, x + width - 21, y + height / 2 - 4, 15, 8)) {
+        if (trackHover) {
             if (GLFW.glfwGetPlatform() != GLFW.GLFW_PLATFORM_WAYLAND) {
                 GLFW.glfwSetCursor(mc.getWindow().getHandle(),
                         thunder.hack.utility.render.Cursors.get(GLFW.GLFW_HAND_CURSOR));

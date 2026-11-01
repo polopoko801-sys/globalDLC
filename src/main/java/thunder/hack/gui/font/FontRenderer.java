@@ -222,7 +222,31 @@ public class FontRenderer implements Closeable {
      */
     private static final float[] SUPERSAMPLE_STEPS = {1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f};
 
+    /**
+     * Below 1x (a HUD element shrunk with its Scale slider) the glyphs used to be baked at full size and
+     * squeezed by the filter, which smears them. Baking them at the size they really appear keeps them native.
+     */
+    private static final float[] DOWNSAMPLE_STEPS = {0.5f, 0.625f, 0.75f, 0.875f};
+
+    /**
+     * The scale nearest to {@code scale} that glyphs are baked at EXACTLY - text drawn at it maps one baked
+     * pixel to one screen pixel, so it is as sharp as the font can be. Any other scale is baked one step
+     * up and shrunk by the filter, which softens it.
+     */
+    public static float snapScale(float scale) {
+        float best = 1f;
+        for (float s : DOWNSAMPLE_STEPS) if (Math.abs(s - scale) < Math.abs(best - scale)) best = s;
+        for (float s : SUPERSAMPLE_STEPS) if (Math.abs(s - scale) < Math.abs(best - scale)) best = s;
+        return best;
+    }
+
     private static float quantize(float supersample) {
+        if (supersample > 0f && supersample < 0.97f) {
+            for (float step : DOWNSAMPLE_STEPS) {
+                if (supersample <= step + 0.001f) return step;
+            }
+            return 1f;
+        }
         if (!(supersample > 1.02f)) return 1f;
         for (float step : SUPERSAMPLE_STEPS) {
             if (supersample <= step + 0.001f) return step;
@@ -244,6 +268,8 @@ public class FontRenderer implements Closeable {
         float boost = quantize(supersample);
         float cap = MAX_BAKED_PX / Math.max(1f, originalSize * scaleMul);
         if (boost > cap) boost = Math.max(1f, cap);
+        // never below ~4 px: a face that tiny has no legible glyphs, a slightly-too-big one squeezed is better
+        if (boost < 1f && originalSize * scaleMul * boost < 4f) boost = 1f;
         return faces.computeIfAbsent(boost, Face::new);
     }
 
@@ -331,7 +357,7 @@ public class FontRenderer implements Closeable {
         sizeCheck();
         // No explicit factor: read it off the matrix the caller is drawing in, so a widget scaled up with
         // getMatrices().scale(...) (MusicWidget, HUD cards' Scale) gets glyphs baked at the size they appear.
-        if (!(supersample > 1f)) {
+        if (!(supersample > 0f) || supersample == 1f) {
             Matrix3x2f m = context.getMatrices();
             supersample = (float) Math.sqrt(Math.abs(m.m00() * m.m11() - m.m01() * m.m10()));
         }

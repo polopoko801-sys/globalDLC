@@ -81,9 +81,9 @@ public class HudElement extends Module {
 
         if (mc.currentScreen instanceof ChatScreen || mc.currentScreen instanceof HudEditorGui) {
             if (mouseButton && mouseState) {
-                pos.getValue().setX(Math.clamp(Render2DEngine.scrollAnimate((normaliseX() - dragX) / mc.getWindow().getScaledWidth(), pos.getValue().getX(), .1f),
+                pos.getValue().setX(Math.clamp(thunder.hack.utility.render.animation.AnimationUtility.fast(pos.getValue().getX(), (normaliseX() - dragX) / mc.getWindow().getScaledWidth(), 6.3f),
                         0, 1f));
-                pos.getValue().setY(Math.clamp(Render2DEngine.scrollAnimate((normaliseY() - dragY) / mc.getWindow().getScaledHeight(), pos.getValue().getY(), .1f),
+                pos.getValue().setY(Math.clamp(thunder.hack.utility.render.animation.AnimationUtility.fast(pos.getValue().getY(), (normaliseY() - dragY) / mc.getWindow().getScaledHeight(), 6.3f),
                         0, 1f - (height / mc.getWindow().getScaledHeight())));
 
                 float finalX = 0;

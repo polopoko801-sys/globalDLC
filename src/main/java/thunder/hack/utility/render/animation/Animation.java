@@ -18,7 +18,7 @@ public final class Animation {
     /** Raw, un-eased progress, 0..1. */
     private float raw;
     private boolean forward;
-    private long lastUpdate = System.currentTimeMillis();
+    private long lastUpdate = System.nanoTime();
 
     public Animation(long durationMs, Easing easing) {
         this.durationMs = Math.max(1, durationMs);
@@ -37,13 +37,13 @@ public final class Animation {
 
     /** Advances by the real time since the last call and returns the eased value, 0..1. */
     public float get() {
-        long now = System.currentTimeMillis();
-        long elapsed = now - lastUpdate;
+        long now = System.nanoTime();
+        float elapsed = (now - lastUpdate) / 1_000_000f;
         lastUpdate = now;
 
         // A frame that took a second (world load, alt-tab) would otherwise teleport every animation to
         // its end; clamping the step keeps a hitch looking like a hitch instead of a jump cut.
-        float step = Math.min(elapsed, 250L) / (float) durationMs;
+        float step = Math.min(elapsed, 250f) / (float) durationMs;
         raw = clamp(forward ? raw + step : raw - step);
 
         return easing.applyClamped(raw);
@@ -58,7 +58,7 @@ public final class Animation {
     public Animation reset(boolean toEnd) {
         raw = toEnd ? 1f : 0f;
         forward = toEnd;
-        lastUpdate = System.currentTimeMillis();
+        lastUpdate = System.nanoTime();
         return this;
     }
 

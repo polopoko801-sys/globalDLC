@@ -89,4 +89,9 @@ public final class ColorSetting {
     public void setDefault() {
         setColor(defaultColor);
     }
+
+    /** The colour this setting started with (what Reset goes back to). */
+    public int getDefaultColor() {
+        return defaultColor;
+    }
 }

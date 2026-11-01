@@ -56,6 +56,10 @@ public final class HitSound extends Module {
 
         // Celestial: no hit sound for the axe swing that breaks a shield
         if (Kilaura.isBreaked) return;
+        if (sound.getValue().synth != null) {
+            thunder.hack.utility.SynthSounds.play(sound.getValue().synth, volume.getValue(), Math.min(2f, shown));
+            return;
+        }
         SoundEvent event = sound.getValue() == Sounds.Moan
                 ? Sounds.values()[Sounds.Moan1.ordinal() + (int) (Math.random() * 4)].event
                 : sound.getValue().event;
@@ -143,16 +147,29 @@ public final class HitSound extends Module {
         Moan3(custom("moan3")),
         Moan4(custom("moan4")),
         // Celestial HitSounds "Moan": a random one of the moans on every hit
-        Moan(custom("moan1"));
+        Moan(custom("moan1")),
+
+        // Synthesised in code (assets/gombal/hitsounds) - not Minecraft sounds at all.
+        Pop("pop"), Bloop("bloop"), Blip8Bit("blip"), Coin("coin"), Laser("laser"), Zap("zap"),
+        Punch("punch"), Kick("kick"), Click("click"), Snap("snap"), Hitmarker("marker"),
+        GlassTing("glass"), SoftChime("chime"), Ding("ding"), Whoosh("whoosh");
 
         private static SoundEvent custom(String name) {
             return SoundEvent.of(net.minecraft.util.Identifier.of("gombal", name));
         }
 
         public final SoundEvent event;
+        /** Name of a synthesised WAV, or null for a game sound event. */
+        public final String synth;
 
         Sounds(SoundEvent event) {
             this.event = event;
+            this.synth = null;
+        }
+
+        Sounds(String synth) {
+            this.event = null;
+            this.synth = synth;
         }
     }
 }

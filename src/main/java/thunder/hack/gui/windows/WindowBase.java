@@ -106,8 +106,8 @@ public class WindowBase {
         thunder.hack.utility.render.RSCompat.disableBlend();
 
         if (dragging) {
-            setX(Render2DEngine.scrollAnimate((normaliseX() - dragX), getX(), .15f));
-            setY(Render2DEngine.scrollAnimate((normaliseY() - dragY), getY(), .15f));
+            setX(thunder.hack.utility.render.animation.AnimationUtility.fast(getX(), (normaliseX() - dragX), 9.75f));
+            setY(thunder.hack.utility.render.animation.AnimationUtility.fast(getY(), (normaliseY() - dragY), 9.75f));
             if (position != null) {
                 position.getValue().setX(getX() / mc.getWindow().getScaledWidth());
                 position.getValue().setY(getY() / mc.getWindow().getScaledHeight());
@@ -115,8 +115,8 @@ public class WindowBase {
         }
 
         if (scaling) {
-            setWidth(Math.max(Render2DEngine.scrollAnimate((normaliseX() - dragX), getWidth(), .15f), getMinWidth()));
-            setHeight(Math.max(Render2DEngine.scrollAnimate((normaliseY() - dragY), getHeight(), .15f), getMinHeight()));
+            setWidth(Math.max(thunder.hack.utility.render.animation.AnimationUtility.fast(getWidth(), (normaliseX() - dragX), 9.75f), getMinWidth()));
+            setHeight(Math.max(thunder.hack.utility.render.animation.AnimationUtility.fast(getHeight(), (normaliseY() - dragY), 9.75f), getMinHeight()));
         }
 
         if (scrolling) {

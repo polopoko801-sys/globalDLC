@@ -115,7 +115,7 @@ public class LyricsText extends Module {
 
         // The text comes live from the small Spotify window the reader keeps open (SpotifyCard): nothing is
         // downloaded, the line is the one Spotify highlights at this moment.
-        SpotifyCard.State state = SpotifyCard.state();
+        SpotifyCard.State state = source();
         String message = switch (state.status()) {
             case Unknown -> "Uruchamiam odczyt Spotify...";
             case NoWindow, NoLyrics -> "Ładuję tekst ze Spotify...";
@@ -180,6 +180,62 @@ public class LyricsText extends Module {
 
         drawLeaving(context, now);
         if (line != null) drawLine(context, line, now, 1f, 0f);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Source                                                              */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Where the current line comes from. First the same source the menu's music card uses - the track and the
+     * exact position from Spotify (logged in) or the Windows media session / window title, and the synced lines
+     * from lrclib - which is the one that works reliably. The hidden Spotify lyrics window ({@link SpotifyCard})
+     * is only the fallback for songs lrclib does not have.
+     */
+    private SpotifyCard.State source() {
+        SpotifyCard.State synced = fromLrclib();
+        return synced != null ? synced : SpotifyCard.state();
+    }
+
+    /** The menu card's source, shaped like {@link SpotifyCard.State}; null when it has nothing for this song. */
+    private SpotifyCard.State fromLrclib() {
+        String title, artist;
+        long position, length;
+        boolean playing;
+        try {
+            if (thunder.hack.utility.spotify.SpotifyAuth.authorised()) {
+                thunder.hack.utility.spotify.SpotifyPlayer.touch(1000L);
+                var snap = thunder.hack.utility.spotify.SpotifyPlayer.state();
+                if (!snap.present()) return null;
+                title = snap.title();
+                artist = snap.artist();
+                position = snap.progressMs();
+                length = snap.durationMs();
+                playing = snap.playing();
+            } else {
+                var track = thunder.hack.utility.spotify.TitleClock.current();
+                if (track == null) return null;
+                title = track.title();
+                artist = track.artist();
+                position = thunder.hack.utility.spotify.TitleClock.position();
+                length = thunder.hack.utility.spotify.TitleClock.duration();
+                playing = thunder.hack.utility.spotify.TitleClock.playing();
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+        var lyrics = thunder.hack.utility.spotify.Lyrics.get(title, artist, length);
+        if (lyrics == null || !lyrics.synced() || lyrics.lines().isEmpty()) return null;
+
+        long now = System.currentTimeMillis();
+        var lines = lyrics.lines();
+        int idx = lyrics.indexAt(position);
+        if (idx < 0) // before the first line: intro, the first line is next
+            return new SpotifyCard.State(SpotifyCard.Status.Intro, -1, "", lines.get(0).text(), now - position, playing);
+        var cur = lines.get(idx);
+        String next = idx + 1 < lines.size() ? lines.get(idx + 1).text() : "";
+        // since = the wall-clock moment this line started, worked back from the exact position in the song
+        return new SpotifyCard.State(SpotifyCard.Status.Line, idx, cur.text(), next, now - (position - cur.atMs()), playing);
     }
 
     /* ------------------------------------------------------------------ */

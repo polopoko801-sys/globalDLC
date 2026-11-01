@@ -33,8 +33,8 @@ public final class RowAnimator<K> {
 
     /** Call once per frame before any {@link #update}. */
     public void frame() {
-        long now = System.currentTimeMillis();
-        float dt = lastFrame == 0L ? 16f : Math.min(100f, now - lastFrame);
+        long now = System.nanoTime();
+        float dt = lastFrame == 0L ? 16f : Math.min(100f, (now - lastFrame) / 1_000_000f);
         lastFrame = now;
         step = dt / durationMs;
         arrivals = 0;

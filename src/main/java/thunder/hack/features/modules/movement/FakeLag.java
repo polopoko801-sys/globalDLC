@@ -3,7 +3,10 @@ package thunder.hack.features.modules.movement;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractItemC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.network.packet.s2c.play.EntityVelocityUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.ExplosionS2CPacket;
@@ -93,12 +96,19 @@ public final class FakeLag extends Module {
          * (2.9-3.3 blocks from your eyes, and you are closer than the server thinks), holds up to
          * {@code LagPackets} movement packets and lets them all out the moment you hit.
          */
-        Combat
+        Combat,
+        /**
+         * LiquidBounce FakeLag "Dynamic": every packet is held (each for a random DelayMs..MaxDelayMs) only
+         * while an enemy is within MinRange..MaxRange AND the server still has you farther from it than you
+         * really are - i.e. while you are closing in. The enemy sees you late, you get the first hit. Anything
+         * in FlushOn releases the queue at once, then RecoilMs has to pass before lagging again.
+         */
+        Dynamic
     }
 
     public enum GhostStyle {Box, Player}
 
-    private final Setting<Mode> mode = new Setting<>("Mode", Mode.Live);
+    private final Setting<Mode> mode = new Setting<>("Mode", Mode.Dynamic);
     /** Pulse: how long you stay frozen for everyone else before the whole queue goes out and you jump. */
     private final Setting<Integer> freezeMs = new Setting<>("FreezeMs", 1000, 50, 3000, v -> mode.getValue() == Mode.Pulse);
     private final Setting<Integer> lagPackets = new Setting<>("LagPackets", 10, 1, 50, v -> mode.getValue() == Mode.Combat);
@@ -109,12 +119,17 @@ public final class FakeLag extends Module {
 
     /** How far behind the server sees you (Live), or how long a sample is held (Test). */
     private final Setting<Integer> delay = new Setting<>("DelayMs", 400, 0, 2000);
-    /**
-     * Held packets let out per tick. 1 is exactly the rate you would be sending anyway, so the server sees a
-     * completely normal client that is simply behind. Going above 2 starts to look like a burst again.
-     */
-    private final Setting<Integer> releasePerTick = new Setting<>("ReleasePerTick", 1, 1, 4,
-            v -> mode.getValue() == Mode.Live);
+    /** Dynamic: upper end of the random per-packet delay (LB default 300..600). */
+    private final Setting<Integer> maxDelay = new Setting<>("MaxDelayMs", 600, 0, 2000, v -> mode.getValue() == Mode.Dynamic);
+    private final Setting<Float> minRange = new Setting<>("MinRange", 2.0f, 0f, 8f, v -> mode.getValue() == Mode.Dynamic);
+    private final Setting<Float> maxRange = new Setting<>("MaxRange", 5.0f, 1f, 10f, v -> mode.getValue() == Mode.Dynamic);
+    /** Dynamic: how long after a flush before lagging may start again. */
+    private final Setting<Integer> recoil = new Setting<>("RecoilMs", 250, 0, 2000, v -> mode.getValue() == Mode.Dynamic);
+    private final Setting<Boolean> flushOnAttack = new Setting<>("FlushOnAttack", true, v -> mode.getValue() == Mode.Dynamic);
+    private final Setting<Boolean> flushOnBlock = new Setting<>("FlushOnBlock", true, v -> mode.getValue() == Mode.Dynamic);
+    /** After a hit nothing is held for this long, so the swing / aim that go with it are not delayed. */
+    private final Setting<Integer> attackGrace = new Setting<>("AttackGrace", 300, 0, 1000, v -> mode.getValue() != Mode.Test);
+    private final Setting<Boolean> flushOnAction = new Setting<>("FlushOnAction", true, v -> mode.getValue() == Mode.Dynamic);
     /**
      * How often the simulation lets a batch out, in ms. 0 releases every tick, which is the smooth case; a
      * larger value is what a burst actually looks like, and seeing it is the point.
@@ -134,7 +149,7 @@ public final class FakeLag extends Module {
      * fight. Live only - Test holds nothing, so there is nothing for it to spoil.
      */
     private final Setting<Boolean> pauseOnAura = new Setting<>("PauseOnAura", true,
-            v -> mode.getValue() == Mode.Live || mode.getValue() == Mode.Pulse);
+            v -> mode.getValue() == Mode.Live || mode.getValue() == Mode.Pulse || mode.getValue() == Mode.Dynamic);
 
     /** Box on the position the server still believes you are standing on (Live) or the test state (Test). */
     private final Setting<Boolean> render = new Setting<>("Render", true);
@@ -169,8 +184,11 @@ public final class FakeLag extends Module {
     private final AtomicBoolean resyncRequested = new AtomicBoolean();
     private final AtomicBoolean teleported = new AtomicBoolean();
 
-    /** Rate limit on collapses, so a fight does not thrash the queue once per swing. Main thread only. */
-    private final Timer collapseTimer = new Timer();
+    /** Dynamic: no lagging before this moment (RecoilMs after a flush), and the current per-packet delay. */
+    private long recoilUntil;
+    private long dynDelay;
+    /** When the last attack went out - nothing is held for AttackGrace ms after it. */
+    private long lastAttackAt;
     /** True while we are the ones sending, so a release does not walk straight back into the queue. */
     private boolean releasing;
 
@@ -187,7 +205,6 @@ public final class FakeLag extends Module {
     /* ------------------------------------------------------------------ */
 
     private long liveReleased;
-    private long liveCollapses;
     private int livePeak;
 
     public FakeLag() {
@@ -228,7 +245,6 @@ public final class FakeLag extends Module {
 
         clearAll("enabled");
         serverPos = mc.player.getEntityPos();
-        collapseTimer.reset();
 
         LOGGER.info("[Cloudan] FakeLag enabled (mode={}, delay={}ms)", mode.getValue(), delay.getValue());
     }
@@ -291,8 +307,8 @@ public final class FakeLag extends Module {
         releasing = false;
         queueAnnounced = false;
         liveReleased = 0L;
-        liveCollapses = 0L;
         livePeak = 0;
+        recoilUntil = 0L;
 
         if (hadSomething || hadSimulation)
             LOGGER.info("[Cloudan] FakeLag simulation queue cleared ({})", reason);
@@ -308,10 +324,79 @@ public final class FakeLag extends Module {
         // Test mode never touches a packet. This early return is the whole guarantee, and it is first.
         if (mode.getValue() == Mode.Test) return;
         if (fullNullCheck() || releasing) return;
+        // Protocol packets are never held. The server-switch acknowledgement (joining a duel through the proxy)
+        // sat in the queue, the world change then cleared the queue, the proxy never got it and kicked you with
+        // "Timed out". A dropped keep-alive answer does the same. Whatever is held goes out first, then this one.
+        if (neverHold(event.getPacket())) {
+            if (heldCount() > 0) flushAll();
+            return;
+        }
+        handleSend(event);
+        // whatever went out un-held is now where the server has you - Dynamic needs this to know when to start
+        if (!event.isCancelled() && event.getPacket() instanceof PlayerMoveC2SPacket move && move.changesPosition())
+            synchronized (LOCK) {
+                serverPos = new Vec3d(move.getX(serverPos.x), move.getY(serverPos.y), move.getZ(serverPos.z));
+            }
+    }
+
+    private void handleSend(PacketEvent.Send event) {
+        Packet<?> hit = event.getPacket();
+        long now = System.currentTimeMillis();
+
+        // THE HIT, in every mode: everything held goes out first (order), then the attack itself - never queued.
+        if (hit instanceof PlayerInteractEntityC2SPacket && (mode.getValue() != Mode.Dynamic || flushOnAttack.getValue())) {
+            combatBlocking = false;
+            if (heldCount() > 0) flushAll();
+            lastAttackAt = now;
+            pulseTimer.reset();
+            if (mode.getValue() == Mode.Dynamic) recoilUntil = now + recoil.getValue();
+            return;
+        }
+        // ...and for AttackGrace ms after it nothing is held either: the swing, the sprint reset and the aim that
+        // belong to the hit used to sit in the queue for DelayMs, so everyone saw the hit ~0.5 s late.
+        if (now - lastAttackAt < attackGrace.getValue() && heldCount() == 0) return;
+
+        if (mode.getValue() == Mode.Dynamic) {
+            Packet<?> p = event.getPacket();
+            if ((flushOnBlock.getValue() && (p instanceof PlayerInteractBlockC2SPacket || p instanceof PlayerInteractItemC2SPacket))
+                    || (flushOnAction.getValue() && p instanceof PlayerActionC2SPacket)) {
+                // queue first, then this packet - the order the server would have seen without us
+                if (heldCount() > 0) {
+                    flushAll();
+                    recoilUntil = System.currentTimeMillis() + recoil.getValue();
+                }
+                return;
+            }
+            // The aura has a target = it is in hit range: from here on nothing is held, so every hit, swing and
+            // aim goes out the moment it happens. Dynamic lags you IN (approach unseen), then the fight is clean.
+            if (pauseOnAura.getValue() && auraEngaged()) {
+                if (heldCount() > 0) flushAll();
+                return;
+            }
+            // LB nextgen: never lag while dead, in water, in a GUI or eating/drinking (the server-side
+            // use-item timing would desync); the queue goes out instead
+            if (!mc.player.isAlive() || mc.player.isTouchingWater() || mc.currentScreen != null || mc.player.isUsingItem()
+                    || p instanceof net.minecraft.network.packet.c2s.common.ResourcePackStatusC2SPacket) {
+                if (heldCount() > 0) {
+                    flushAll();
+                    recoilUntil = System.currentTimeMillis() + recoil.getValue();
+                }
+                return;
+            }
+            // once something is held everything after it must queue too, or the order breaks
+            if (heldCount() > 0 || (System.currentTimeMillis() >= recoilUntil && dynamicShouldLag())) {
+                if (heldCount() == 0) rollDynDelay();
+                event.cancel();
+                hold(p);
+            }
+            return;
+        }
 
         if (mode.getValue() == Mode.Pulse) {
+            // Flushed right here, not on the next tick: letting this packet through first would put it ahead
+            // of everything already held - a PacketOrder flag.
             if (pauseOnAura.getValue() && auraEngaged()) {
-                if (heldCount() > 0) requestResync();
+                if (heldCount() > 0) flushAll();
                 return;
             }
             // Vanadium-style: EVERY packet is held (pongs and tick-ends too) and the pulse sends them all in the
@@ -323,24 +408,13 @@ public final class FakeLag extends Module {
         }
 
         if (mode.getValue() == Mode.Combat) {
-            if (event.getPacket() instanceof PlayerInteractEntityC2SPacket) {
-                // Augustus: the hit releases everything first, so it lands from where you really are
-                combatBlocking = false;
-                flushAll();
-                return;
-            }
+            // Once blocking, EVERYTHING is held (pongs too), not just movement - holding only moves while pongs
+            // overtake them is the PacketOrder flag Pulse already learned about.
             if (!combatBlocking && event.getPacket() instanceof PlayerMoveC2SPacket && sweetSpot()) combatBlocking = true;
-            if (combatBlocking) {
+            if (combatBlocking || heldCount() > 0) {
                 event.cancel();
                 hold(event.getPacket());
             }
-            return;
-        }
-
-        // Your own hit needs the server to know where you are standing: everything held goes out first, in
-        // order, and the hit right after it (sending it ahead of the held packets is a PacketOrder flag).
-        if (event.getPacket() instanceof PlayerInteractEntityC2SPacket) {
-            flushAll();
             return;
         }
 
@@ -358,10 +432,7 @@ public final class FakeLag extends Module {
 
         // All packets, not just movement - see Pulse above.
         event.cancel();
-        synchronized (LOCK) {
-            queue.add(new Held(event.getPacket(), System.currentTimeMillis()));
-            if (queue.size() > livePeak) livePeak = queue.size();
-        }
+        hold(event.getPacket());
     }
 
     /* ------------------------------------------------------------------ */
@@ -401,6 +472,13 @@ public final class FakeLag extends Module {
 
         // Knockback has to be applied from where you really are, or you get shoved from a stale spot and the
         // client and server disagree about where you land - which the server resolves by moving you back.
+        // LB nextgen Dynamic: any health change (= you took damage) flushes
+        if (mode.getValue() == Mode.Dynamic
+                && event.getPacket() instanceof net.minecraft.network.packet.s2c.play.HealthUpdateS2CPacket) {
+            requestResync();
+            return;
+        }
+
         if (event.getPacket() instanceof ExplosionS2CPacket) {
             requestResync();
             return;
@@ -437,6 +515,7 @@ public final class FakeLag extends Module {
         switch (mode.getValue()) {
             case Pulse -> tickPulse();
             case Combat -> tickCombat();
+            case Dynamic -> tickDynamic();
             default -> tickLive();
         }
         updateGhost();
@@ -448,8 +527,9 @@ public final class FakeLag extends Module {
     private boolean combatBlocking;
 
     private void hold(Packet<?> packet) {
+        long now = System.currentTimeMillis();
         synchronized (LOCK) {
-            queue.add(new Held(packet, System.currentTimeMillis()));
+            queue.add(new Held(packet, now));
             if (queue.size() > livePeak) livePeak = queue.size();
         }
     }
@@ -489,13 +569,79 @@ public final class FakeLag extends Module {
     private void tickCombat() {
         if (!handleIntents()) return;
         int moves = 0;
+        long oldest = 0;
         synchronized (LOCK) {
             for (Held h : queue) if (h.packet() instanceof PlayerMoveC2SPacket) moves++;
+            if (!queue.isEmpty()) oldest = System.currentTimeMillis() - queue.getFirst().queuedAt();
         }
-        if (moves > lagPackets.getValue() || (combatBlocking && !auraEngaged())) {
+        // DelayMs caps how long anything may sit, so a fight with no hit can never freeze you for good
+        if (moves > lagPackets.getValue() || oldest > delay.getValue() || (combatBlocking && !auraEngaged())) {
             combatBlocking = false;
             flushAll();
         }
+    }
+
+    /* -- Dynamic (LiquidBounce) ---------------------------------------- */
+
+    private void tickDynamic() {
+        boolean had = heldCount() > 0;
+        if (!handleIntents()) return;
+        if (had && heldCount() == 0) recoilUntil = System.currentTimeMillis() + recoil.getValue();
+        if (heldCount() == 0) return;
+        long now = System.currentTimeMillis();
+        if (!dynamicShouldLag()) {
+            // stopped closing in (or the enemy left the range): everything goes, then recoil
+            flushAll();
+            recoilUntil = now + recoil.getValue();
+            return;
+        }
+        List<Packet<?>> due = new ArrayList<>();
+        synchronized (LOCK) {
+            int over = queue.size() - queueLimit.getValue() * 3;
+            while (!queue.isEmpty() && (over-- > 0 || now - queue.getFirst().queuedAt() >= dynDelay))
+                due.add(queue.removeFirst().packet());
+        }
+        if (!due.isEmpty()) {
+            sendAll(due);
+            rollDynDelay();
+        }
+    }
+
+    private void rollDynDelay() {
+        int a = delay.getValue(), b = Math.max(a, maxDelay.getValue());
+        dynDelay = a == b ? a : java.util.concurrent.ThreadLocalRandom.current().nextInt(a, b + 1);
+    }
+
+    /**
+     * LB nextgen Dynamic: an enemy must be within MinRange..MaxRange. With nothing held yet that is enough to
+     * start. While holding, keep going only as long as the server's (old) position is NOT closer to the nearest
+     * enemy than your real one and no enemy's hitbox overlaps you there - i.e. stop once lagging would make
+     * you look closer / hittable instead of farther.
+     */
+    private boolean dynamicShouldLag() {
+        Vec3d me = mc.player.getEntityPos();
+        Vec3d server;
+        synchronized (LOCK) {
+            server = serverPos;
+        }
+        boolean nearby = false;
+        double clientDist = Double.MAX_VALUE, serverDist = Double.MAX_VALUE;
+        Box serverBox = mc.player.getBoundingBox().offset(server.subtract(me));
+        for (net.minecraft.entity.player.PlayerEntity p : mc.world.getPlayers()) {
+            if (p == mc.player || p.getId() == GHOST_ID || !p.isAlive() || thunder.hack.core.Managers.FRIEND.isFriend(p)) continue;
+            double d = mc.player.distanceTo(p);
+            if (d >= minRange.getValue() && d <= maxRange.getValue()) nearby = true;
+            Vec3d at = p.getEntityPos();
+            if (server.distanceTo(at) <= maxRange.getValue()) {
+                if (p.getBoundingBox().intersects(serverBox)) return false;
+                serverDist = Math.min(serverDist, server.distanceTo(at));
+                clientDist = Math.min(clientDist, me.distanceTo(at));
+            }
+        }
+        if (!nearby) return false;
+        if (heldCount() == 0) return true;
+        if (serverDist == Double.MAX_VALUE) return false;
+        return serverDist >= clientDist;
     }
 
     /**
@@ -522,7 +668,7 @@ public final class FakeLag extends Module {
 
     /* -- Ghost player (Debug 1.2.6) ------------------------------------- */
 
-    private static final int GHOST_ID = -1337420;
+    public static final int GHOST_ID = -1337420;
     private net.minecraft.client.network.OtherClientPlayerEntity ghost;
 
     /** Debug's FakeLag spawned a copy of you where the server last saw you; same here, while packets are held. */
@@ -632,55 +778,6 @@ public final class FakeLag extends Module {
         sendAll(due);
     }
 
-    /**
-     * Resyncs the server in ONE packet: every stale position is thrown away and only the newest is sent.
-     *
-     * <p>This is what used to be a burst, and the burst is what earned the setback - the server measures each
-     * packet of a burst from the same tick-start position, so their distances add up until it decides you
-     * moved too quickly. The intermediate steps buy nothing; only where you are right now matters.
-     */
-    private void release() {
-        if (mc.getNetworkHandler() == null) {
-            synchronized (LOCK) {
-                queue.clear();
-            }
-            return;
-        }
-
-        List<Packet<?>> out = new ArrayList<>();
-
-        synchronized (LOCK) {
-            if (queue.isEmpty()) return;
-
-            Packet<?> newest = queue.get(queue.size() - 1).packet();
-
-            // A look-only packet carries no position, so the last positional one has to go with it or the
-            // server keeps the stale spot.
-            Packet<?> newestPos = null;
-            for (int i = queue.size() - 1; i >= 0; i--) {
-                if (queue.get(i).packet() instanceof PlayerMoveC2SPacket move && move.changesPosition()) {
-                    newestPos = queue.get(i).packet();
-                    break;
-                }
-            }
-
-            queue.clear();
-
-            if (newestPos != null) out.add(newestPos);
-            if (newest != newestPos) out.add(newest);
-        }
-
-        sendAll(out);
-    }
-
-    /** A collapse that refuses to run more than a few times a second. Main thread only. */
-    private void collapse() {
-        if (!collapseTimer.passedMs(150)) return;
-        collapseTimer.reset();
-        liveCollapses++;
-        release();
-    }
-
     private void sendAll(List<Packet<?>> packets) {
         if (packets.isEmpty()) return;
         if (mc.getNetworkHandler() == null) return;
@@ -699,6 +796,24 @@ public final class FakeLag extends Module {
         } finally {
             releasing = false;
         }
+    }
+
+    /**
+     * Packets that must never sit in (or be dropped with) the queue: the proxy's server-switch handshake, the
+     * keep-alive answer, respawn, chat/commands, resource pack and client settings. None of them move you, so
+     * sending them on time changes nothing about the lag - holding them is what disconnects you.
+     */
+    private static boolean neverHold(Packet<?> p) {
+        return p instanceof net.minecraft.network.packet.c2s.play.AcknowledgeReconfigurationC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.common.KeepAliveC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.play.ClientStatusC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.play.ChatMessageC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.play.CommandExecutionC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.play.ChatCommandSignedC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.common.ResourcePackStatusC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.common.CustomPayloadC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.common.CookieResponseC2SPacket
+                || p instanceof net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
     }
 
     /** True while Kilaura is on and actually locked onto something. */
@@ -725,26 +840,73 @@ public final class FakeLag extends Module {
      * <p>In Live that is where the server still thinks you are; in Test it is the released test state. Drawn
      * as a real projected cube, so it looks like a body standing there rather than a flat rectangle.
      */
-    private void drawGhost(DrawContext context) {
-        Vec3d behind;
+    /** Ghost visuals: eased fade, a position that glides instead of stepping per packet, and the frame clock. */
+    private float ghostFade;
+    private Vec3d ghostShown;
+    private long ghostFrame;
 
+    private void drawGhost(DrawContext context) {
+        long nowNs = System.nanoTime();
+        float dt = ghostFrame == 0 ? 0.016f : Math.min(0.1f, (nowNs - ghostFrame) / 1e9f);
+        ghostFrame = nowNs;
+
+        Vec3d behind = null;
+        long ageMs = 0;
+        int held = 0;
         if (mode.getValue() == Mode.Test) {
             LagSimulator.Sample state = simulator.testState();
-            if (state == null) return;
-            behind = state.pos();
+            if (state != null) behind = state.pos();
         } else {
-            if (heldCount() == 0) return;
             synchronized (LOCK) {
-                behind = serverPos;
+                held = queue.size();
+                if (held > 0) {
+                    behind = serverPos;
+                    ageMs = System.currentTimeMillis() - queue.getFirst().queuedAt();
+                }
             }
         }
 
-        Color line = HudEditor.getColor(0);
-        Color fill = new Color(line.getRed(), line.getGreen(), line.getBlue(), 60);
+        // hidden while it would sit inside you anyway - no flicker of a box glued to your own hitbox
+        boolean visible = behind != null && behind.distanceTo(mc.player.getEntityPos()) > 0.05;
+        if (visible) {
+            float k = 1f - (float) Math.exp(-dt * 20f);
+            ghostShown = ghostShown == null || ghostShown.distanceTo(behind) > 10 ? behind : ghostShown.lerp(behind, k);
+        }
+        ghostFade += ((visible ? 1f : 0f) - ghostFade) * (1f - (float) Math.exp(-dt * 12f));
+        if (ghostFade < 0.02f || ghostShown == null) {
+            if (!visible) ghostShown = null;
+            return;
+        }
+
+        Color c = HudEditor.getColor(0);
+        Color top = alpha(c, (int) (110 * ghostFade));
+        Color bottom = alpha(c, (int) (25 * ghostFade));
+        Color outline = alpha(c, (int) (235 * ghostFade));
 
         // Your real hitbox, moved onto the delayed position, so it shrinks when you sneak or swim too.
-        Box ghost = mc.player.getBoundingBox().offset(behind.subtract(mc.player.getEntityPos()));
-        Render3DEngine.drawProjectedBox(context, ghost, fill, fill, line, 1.5f, true, true);
+        Box ghost = mc.player.getBoundingBox().offset(ghostShown.subtract(mc.player.getEntityPos()));
+        Render3DEngine.drawProjectedBox(context, ghost, top, bottom, outline, 1.6f, true, true);
+
+        // tether from you to where the server still has you
+        Vec3d from = mc.player.getBoundingBox().getCenter();
+        Render3DEngine.drawGlowLine2D(context, from, ghost.getCenter(), alpha(c, (int) (120 * ghostFade)), 6f);
+
+        // tag: how much is held and how far behind the server is
+        Vec3d s = Render3DEngine.worldSpaceToScreenSpace(new Vec3d(ghost.getCenter().x, ghost.maxY + 0.3, ghost.getCenter().z));
+        if (s.z > 0 && s.z < 1 && mode.getValue() != Mode.Test) {
+            String text = held + " pkt  " + ageMs + "ms";
+            var font = FontRenderers.sf_bold_mini;
+            float w = font.getStringWidth(text) + 8f, h = 11f;
+            float x = (float) s.x - w / 2f, y = (float) s.y - h;
+            Render2DEngine.drawRound(context, x, y, w, h, 3f, alpha(new Color(14, 14, 20), (int) (200 * ghostFade)));
+            float p = Math.min(1f, ageMs / (float) Math.max(1, mode.getValue() == Mode.Dynamic ? maxDelay.getValue() : delay.getValue()));
+            Render2DEngine.drawRect(context, x + 2f, y + h - 2f, (w - 4f) * p, 1f, alpha(c, (int) (255 * ghostFade)));
+            font.drawCenteredString(context, text, s.x, y + 2.5f, alpha(Color.WHITE, (int) (255 * ghostFade)).getRGB());
+        }
+    }
+
+    private static Color alpha(Color c, int a) {
+        return new Color(c.getRed(), c.getGreen(), c.getBlue(), Math.max(0, Math.min(255, a)));
     }
 
     /** The FAKELAG TEST panel. Reads published snapshots only - it never walks a live queue. */
@@ -778,9 +940,7 @@ public final class FakeLag extends Module {
             if (statistics.getValue()) {
                 lines.add("Released: " + liveReleased);
                 lines.add("Dropped: 0 (never drops)");
-                lines.add("Collapses: " + liveCollapses);
                 lines.add("Peak Queue: " + livePeak);
-                lines.add("Release/tick: " + releasePerTick.getValue());
             }
         }
 

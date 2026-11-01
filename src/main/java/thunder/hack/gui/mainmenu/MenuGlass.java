@@ -49,10 +49,10 @@ public final class MenuGlass {
 
         // neutral smoke: darker without the blur, since then it is all that separates the pane from the image
         int veil = Math.round((blurred ? 92 - 24 * lift : 170 - 30 * lift) * alpha);
-        Render2DEngine.drawRound(context, x, y, w, h, radius, Render2DEngine.injectAlpha(VEIL, veil));
+        Render2DEngine.drawRoundSmooth(context, x, y, w, h, radius, Render2DEngine.injectAlpha(VEIL, veil));
 
         // a milky lift so the glass reads bright rather than as a dark hole
-        Render2DEngine.drawRound(context, x, y, w, h, radius,
+        Render2DEngine.drawRoundSmooth(context, x, y, w, h, radius,
                 new Color(255, 255, 255, Math.round((10 + 12 * lift) * alpha)));
 
         // No sheen: every shape of highlight tried here showed as a box, a band or a wedge on these panes.

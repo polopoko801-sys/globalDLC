@@ -35,7 +35,7 @@ public class SliderElement extends AbstractElement {
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
-        animation = Render2DEngine.scrollAnimate(animation, (((Number) setting.getValue()).floatValue() - min) / (max - min), 0.4f);
+        animation = thunder.hack.utility.render.animation.AnimationUtility.fast(animation, (((Number) setting.getValue()).floatValue() - min) / (max - min), 55f);
 
         DrawContext matrixStack = context;
 

@@ -195,8 +195,9 @@ public class Notification {
         return isFinished() && animationX >= width - 5;
     }
 
+    /** Glides the toast to its slot in the stack - same speed at any frame rate (was 1/8 per frame). */
     public float animate(float value, float target) {
-        return value + (target - value) / 8f;
+        return thunder.hack.utility.render.animation.AnimationUtility.fast(value, target, 12f);
     }
 
     public enum Type {

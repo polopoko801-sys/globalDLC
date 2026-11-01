@@ -139,8 +139,8 @@ public class WallpaperGallery extends Screen {
     private float tabPillX = -1f, tabPillW;
     /** Eased width of the active dot, so the page indicator stretches rather than jumps. */
     private float dotHead = -1f, dotTail;
-    private final thunder.hack.utility.render.core.Spring dotHeadSpring = new thunder.hack.utility.render.core.Spring(340f, 24f, 0f);
-    private final thunder.hack.utility.render.core.Spring dotTailSpring = new thunder.hack.utility.render.core.Spring(120f, 18f, 0f);
+    private final thunder.hack.utility.render.core.Spring dotHeadSpring = new thunder.hack.utility.render.core.Spring(300f, 31f, 0f);
+    private final thunder.hack.utility.render.core.Spring dotTailSpring = new thunder.hack.utility.render.core.Spring(130f, 22f, 0f);
     private thunder.hack.utility.render.core.Spring tabLeft, tabRight;
 
     /** Per control, a spring resting at 1: a click kicks it down and it bounces back - the press. */
@@ -346,7 +346,7 @@ public class WallpaperGallery extends Screen {
         // gathers itself up on arrival. Dots under it fade out of the way.
         dotRects.clear();
         int shownDots = Math.min(n, 30);
-        float dotGap = 13f, dot = 5f, pillHalf = 9f;
+        float dotGap = 13f, dot = 5f;
         float dx = cx - (shownDots - 1) * dotGap / 2f, dy = cy + cardH / 2f + 18f;
         float target = Math.min(index, shownDots - 1);
         if (dotHead < 0f) {
@@ -358,19 +358,22 @@ public class WallpaperGallery extends Screen {
         dotTail = dotTailSpring.update(target, frameStep);
         float lo = Math.min(dotHead, dotTail), hi = Math.max(dotHead, dotTail);
 
+        // Clean and quiet, like a phone's page dots: smooth anti-aliased shapes (the old 4-segment rounding made
+        // them jagged), no halo, and the dots stay put - the pill simply slides over them, drawn on top.
         for (int i = 0; i < shownDots; i++) {
-            float x = dx + i * dotGap;
-            // fully hidden inside the pill, back to normal a dot's width outside it
-            float inside = Math.max(0f, Math.min(1f, (Math.max(lo - i, i - hi) * dotGap - pillHalf + dot) / dot));
-            if (inside > 0.01f)
-                Render2DEngine.drawRound(context, x - dot / 2f, dy - dot / 2f, dot, dot, dot / 2f,
-                        new Color(255, 255, 255, Math.round(65 * inside)));
+            float x = Render2DEngine.snap(dx + i * dotGap);
+            Render2DEngine.drawRoundSmooth(context, x - dot / 2f, dy - dot / 2f, dot, dot, dot / 2f, new Color(255, 255, 255, 70));
             dotRects.add(new float[]{x - dotGap / 2f, dy - 7f, dotGap, 14f});
         }
-        float left = dx + lo * dotGap - pillHalf, right = dx + hi * dotGap + pillHalf;
-        Color dotAccent = HudEditor.getColor(0);
-        Render2DEngine.drawRound(context, left - 2f, dy - 4.5f, right - left + 4f, 9f, 4.5f, Render2DEngine.injectAlpha(dotAccent, 45));
-        Render2DEngine.drawRound(context, left, dy - dot / 2f, right - left, dot, dot / 2f, dotAccent);
+        float left = dx + lo * dotGap - dot / 2f - 1f, right = dx + hi * dotGap + dot / 2f + 1f;
+        // the pill is at least a little longer than a dot, so it reads as "this page" even at rest
+        float minLen = dot + 8f;
+        if (right - left < minLen) {
+            float mid = (left + right) / 2f;
+            left = mid - minLen / 2f;
+            right = mid + minLen / 2f;
+        }
+        Render2DEngine.drawRoundSmooth(context, left, dy - dot / 2f - 0.5f, right - left, dot + 1f, (dot + 1f) / 2f, HudEditor.getColor(0));
 
         // the centred wallpaper's name, and the button that applies it
         String file = files.get(index);

@@ -520,6 +520,99 @@ vec3 daydream(vec3 d, float t, int oct, float detail) {
     return col * 1.25;
 }
 
+// ---------------------------------------------------------------- style 19..23: czarne niebo ze światłem
+
+// miękka plama światła wokół najbliższego (ruchomego) punktu w siatce komórek; keep = jaka część komórek świeci
+float glowField(vec3 p, float t, float size, float keep, out float idOut) {
+    vec3 v = voronoiId(p, t);
+    idOut = v.z;
+    if (v.z > keep) return 0.0;
+    float r = v.x / size;
+    return exp(-r * r * 1.5);
+}
+
+// 19: czarne tło, duże białe świecące plamy, które powoli płyną i pulsują + drobniejsza, dalsza warstwa
+vec3 glowOrbs(vec3 d, float t, int oct, float detail) {
+    vec3 col = vec3(0.004, 0.004, 0.006);
+    vec3 q = swirl(d, t) * (2.2 * P0.y) + flowOffset(t) * 0.3;
+    float id;
+    float g = glowField(q, t * 0.35, 0.2, 0.45, id);
+    float pulse = 0.7 + 0.3 * sin(t * (0.8 + id * 1.7) + id * 30.0);
+    col += vec3(1.0) * g * pulse * (0.55 + P1.y * 0.7);
+    col += vec3(1.0) * pow(g, 10.0) * 1.4;                       // jasny środek
+    float id2;
+    float g2 = glowField(q * 2.3 + 17.0, t * 0.5, 0.16, 0.35, id2);
+    col += vec3(0.85, 0.9, 1.0) * g2 * 0.3;
+    col += vec3(stars(d, Flow.w * 0.6, t)) * 0.6;
+    return col;
+}
+
+// 20: świetliki - małe ciepłe punkty, które dryfują i zapalają się / gasną
+vec3 fireflies(vec3 d, float t, int oct, float detail) {
+    vec3 col = mix(vec3(0.0), vec3(0.008, 0.012, 0.03), smoothstep(-0.2, 0.6, d.y));
+    vec3 q = d * (7.0 * P0.y) + vec3(0.0, t * 0.08, 0.0);
+    float id;
+    float g = glowField(q, t * 1.3, 0.09, 0.5, id);
+    float blink = smoothstep(0.2, 1.0, sin(t * (1.2 + id * 2.5) + id * 50.0) * 0.5 + 0.5);
+    vec3 warm = mix(vec3(1.0, 0.85, 0.35), vec3(0.75, 1.0, 0.45), fract(id * 7.0));
+    col += warm * (g * 0.8 + pow(g, 6.0) * 2.0) * blink * (0.7 + P1.y * 0.6);
+    return col;
+}
+
+// 21: czarna noc z wielkim, świecącym księżycem (kratery, poświata) i cienkimi chmurami
+vec3 moonlight(vec3 d, float t, int oct, float detail) {
+    vec3 col = vec3(0.003, 0.004, 0.008);
+    vec3 m = normalize(vec3(0.35, 0.55, 0.75));
+    float ang = acos(clamp(dot(d, m), -1.0, 1.0));
+    float rad = 0.075;
+    float disc = 1.0 - smoothstep(rad * 0.97, rad, ang);
+    vec3 u, v;
+    basis(m, u, v);
+    vec2 uv = vec2(dot(d, u), dot(d, v)) / rad;
+    float crater = fbm(vec3(uv * 3.0, 4.2), 4, detail);
+    vec3 moon = vec3(0.92, 0.93, 0.96) * (0.72 + 0.35 * crater);
+    col = mix(col, moon, disc);
+    col += vec3(0.85, 0.9, 1.0) * exp(-ang * 9.0) * 0.5 * (0.6 + P1.y) * (1.0 - disc);
+    col += vec3(0.6, 0.7, 1.0) * exp(-ang * 2.5) * 0.07;
+    float cl = fbm(d * 2.2 * P0.y + flowOffset(t) * 0.5, oct, detail);
+    float cloud = smoothstep(0.55, 0.85, cl) * smoothstep(-0.05, 0.3, d.y);
+    col += vec3(0.5, 0.55, 0.65) * cloud * (0.06 + 0.5 * exp(-ang * 3.0));
+    col += vec3(stars(d, Flow.w, t)) * 0.8 * (1.0 - disc);
+    return col;
+}
+
+// 22: czarne niebo i padający, świecący śnieg w trzech warstwach głębi
+vec3 snowfall(vec3 d, float t, int oct, float detail) {
+    vec3 col = vec3(0.005, 0.006, 0.01);
+    for (int l = 0; l < 3; l++) {
+        float fl = float(l);
+        vec3 q = d * (5.0 + fl * 4.0) * P0.y + vec3(sin(t * 0.3 + fl) * 0.3, t * (0.35 + fl * 0.25), 0.0);
+        float id;
+        float g = glowField(q + fl * 13.0, t * 0.2, 0.05 + 0.025 * (2.0 - fl), 0.55, id);
+        col += vec3(1.0) * (g * 0.45 + pow(g, 5.0)) * (0.6 - fl * 0.14) * (0.8 + P1.y * 0.5);
+    }
+    return col;
+}
+
+// 23: bokeh - duże rozmyte koła światła z jaśniejszym brzegiem, jak nieostre światła nocą
+vec3 bokeh(vec3 d, float t, int oct, float detail) {
+    vec3 col = vec3(0.003);
+    for (int l = 0; l < 2; l++) {
+        float fl = float(l);
+        vec3 q = swirl(d, t) * (2.0 + fl * 1.6) * P0.y + flowOffset(t) * 0.2 + fl * 31.0;
+        vec3 v = voronoiId(q, t * 0.15);
+        if (v.z < 0.55) {
+            float rad = 0.18 + 0.12 * fract(v.z * 13.0);
+            float disc = 1.0 - smoothstep(rad - 0.015, rad, v.x);
+            float rim = smoothstep(rad - 0.05, rad - 0.005, v.x) * disc;
+            vec3 tint = mix(vec3(1.0), palette(fract(v.z * 5.0)), 0.3);
+            col += tint * (disc * 0.10 + rim * 0.2) * (1.0 - fl * 0.35) * (0.8 + P1.y * 0.5);
+        }
+    }
+    col += vec3(stars(d, Flow.w * 0.5, t)) * 0.5;
+    return col;
+}
+
 void main() {
     // tylko niebo: tam, gdzie świat nic nie narysował, głębia została wyczyszczona do 1.0
     if (texture(DepthSampler, texCoord).r < 0.99999) discard;
@@ -552,6 +645,11 @@ void main() {
     else if (style == 16) col = warp(d, t, oct, detail);
     else if (style == 17) col = ocean(d, t, oct, detail);
     else if (style == 18) col = daydream(d, t, oct, detail);
+    else if (style == 19) col = glowOrbs(d, t, oct, detail);
+    else if (style == 20) col = fireflies(d, t, oct, detail);
+    else if (style == 21) col = moonlight(d, t, oct, detail);
+    else if (style == 22) col = snowfall(d, t, oct, detail);
+    else if (style == 23) col = bokeh(d, t, oct, detail);
     else col = plasma(d, t, oct, detail, hq) + vec3(stars(d, Flow.w * 0.4, t)) * 0.5;
 
     col *= P0.w;

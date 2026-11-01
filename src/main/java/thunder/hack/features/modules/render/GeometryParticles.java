@@ -269,8 +269,9 @@ public class GeometryParticles extends Module {
     public void onRender3D(net.minecraft.client.util.math.MatrixStack matrices) {
         if (fullNullCheck()) return;
 
-        long now = System.currentTimeMillis();
-        float delta = lastFrame == 0L ? 16f : Math.min(250f, now - lastFrame);
+        // nanoTime: at high frame rates a millisecond clock steps 3,4,3,4 ms and the rotation visibly judders
+        long now = System.nanoTime();
+        float delta = lastFrame == 0L ? 16f : Math.min(250f, (now - lastFrame) / 1_000_000f);
         lastFrame = now;
 
         step(delta);
@@ -409,41 +410,53 @@ public class GeometryParticles extends Module {
                 world[i] = centre.add(x3, y3, z2);
             }
 
-            // A faint soft halo around the whole cube - reaches ~0.5 block out, lightly - so it glows into the air
-            // around it rather than only the edges being lit.
-            if (glow.getValue()) {
-                double halo = (scale + 0.5) * 2.0;
+            boolean tw = throughWalls.getValue();
+            // Near band (Quality decides how far it reaches) gets the full neon treatment; further out the wide
+            // glow and the halo are below a pixel anyway, so only the core and the corner dots are drawn.
+            boolean near = lodFor(distance) == Lod.NEAR;
+
+            // A faint soft halo around the whole solid - a true billboard now (it faces the camera on every axis,
+            // the old yaw-only sprite went flat and edge-on when you looked at it from above or below).
+            if (glow.getValue() && near) {
+                double halo = (scale + 0.5);
                 Color h = Render2DEngine.injectAlpha(color, Math.round(color.getAlpha() * GLOW_STRENGTH * 0.18f));
-                Render3DEngine.drawOrientedSprite3D(TextureStorage.fxHalo, centre.add(0, halo * 0.5, 0),
-                        -CloudanRenderCore.cameraYaw(), 0f, 0f, -halo / 2, halo, halo, h, false, throughWalls.getValue());
+                Render3DEngine.drawBillboards3D(TextureStorage.fxHalo,
+                        java.util.List.of(new Render3DEngine.GroundSprite(centre, halo, 0, h)), tw);
             }
 
-            // Neon edge like the reference: a WIDE faint glow, a medium mid, and a THIN BRIGHT-WHITE core on top.
+            // All edges of this solid in ONE list, so each pass is one draw call for the whole shape. It used to be
+            // a call per edge per pass - 72 for a cube, ~2000 a frame for a full field - which is what made the
+            // effect cost so much that Quality had to stay low.
+            int[][] edges = p.template.edges();
+            java.util.List<Vec3d> segs = new ArrayList<>(edges.length * 2);
+            for (int[] e : edges) {
+                segs.add(world[e[0]]);
+                segs.add(world[e[1]]);
+            }
+
+            // Neon edge: a WIDE faint glow, a medium mid, and a THIN BRIGHT core on top.
             Color wide = Render2DEngine.injectAlpha(color, Math.round(color.getAlpha() * GLOW_STRENGTH * 0.45f));
             Color mid = Render2DEngine.injectAlpha(color, Math.round(color.getAlpha() * GLOW_STRENGTH * 0.9f));
             Color coreC = new Color(
                     Math.min(255, (color.getRed() + 255) / 2),
                     Math.min(255, (color.getGreen() + 255) / 2),
-                    Math.min(255, (color.getBlue() + 255) / 2), 255);
-            for (int[] e : p.template.edges()) {
-                java.util.List<Vec3d> seg = java.util.List.of(world[e[0]], world[e[1]]);
-                boolean tw = throughWalls.getValue();
-                if (glow.getValue()) {
-                    Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(wide, wide), scale * 0.22, tw);
-                    Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(mid, mid), scale * 0.10, tw);
-                }
-                // a floor on the core's width: at 3% of a small cube it was a fraction of a pixel and shimmered
-                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, seg, java.util.List.of(coreC, coreC),
-                        Math.max(scale * 0.035, 0.014), tw);
+                    Math.min(255, (color.getBlue() + 255) / 2), Math.max(1, color.getAlpha()));
+            if (glow.getValue() && near) {
+                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, segs, java.util.List.of(wide), scale * 0.22, tw);
+                Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, segs, java.util.List.of(mid), scale * 0.10, tw);
             }
+            // a floor on the core's width: at 3% of a small cube it was a fraction of a pixel and shimmered.
+            // Line width setting scales it (it used to do nothing for the 3D beams).
+            double coreW = Math.max(scale * 0.035, 0.014) * (lineWidth.getValue() / 2.2f);
+            Render3DEngine.drawBeamSegments3D(TextureStorage.fxLine, segs, java.util.List.of(coreC), coreW, tw);
 
-            // Joints: a small soft glow on every vertex. Beams end square, so where two edges met there was a
-            // notch and a stair-step; a dot of light over each corner closes it and makes the corners shine.
-            float joint = Math.max(scale * 0.16f, 0.05f);
+            // Joints: a small soft glow on every vertex, all corners in one batched billboard call. Beams end
+            // square, so where two edges met there was a notch; a dot of light over each corner closes it.
+            float joint = Math.max(scale * 0.08f, 0.025f);
             Color jointC = Render2DEngine.injectAlpha(coreC, Math.round(color.getAlpha() * 0.85f));
-            for (Vec3d v : world)
-                Render3DEngine.drawOrientedSprite3D(TextureStorage.ghostGlow, v.add(0, joint * 0.5, 0),
-                        -CloudanRenderCore.cameraYaw(), 0f, 0f, -joint / 2, joint, joint, jointC, false, throughWalls.getValue());
+            java.util.List<Render3DEngine.GroundSprite> joints = new ArrayList<>(world.length);
+            for (Vec3d v : world) joints.add(new Render3DEngine.GroundSprite(v, joint, 0, jointC));
+            Render3DEngine.drawBillboards3D(TextureStorage.ghostGlow, joints, tw);
         }
     }
 

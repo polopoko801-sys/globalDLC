@@ -49,7 +49,7 @@ public class MainMenuScreen extends Screen {
     public static boolean enabled = true;
 
     private static final Color CLOCK = new Color(0xE9E9EE);
-    private static final Color DATE = new Color(0xC9C9D2);
+    private static final Color DATE = new Color(0xE4E4EC);
     private static final Color HINT = new Color(0x8E8E99);
 
     /** Where the start content sits, as a fraction of the window height. */
@@ -130,6 +130,32 @@ public class MainMenuScreen extends Screen {
      * @param presence 1 fully shown, 0 fully gone
      */
     private void drawStart(DrawContext context, float w, float h, int mouseX, int mouseY, float presence) {
+        // The clock stays when the menu opens: it glides up to the top of the screen and shrinks a little, while
+        // the date and the music card rise away with the rest.
+        float scaleUi = uiScale(w, h);
+        float t = MenuTransition.ease(1f - presence);
+        String time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"));
+        FontRenderer clockFontNow = FontRenderers.brand != null ? FontRenderers.brand : FontRenderers.sf_bold_big;
+        // the date and the clock move up together and stay exactly as on the start screen - same sizes, same layout
+        float restDateY = h * CLOCK_Y, topDateY = h * 0.05f;
+        float dateYNow = restDateY + (topDateY - restDateY) * t;
+        String dateNow = LocalDateTime.now().format(DateTimeFormatter.ofPattern("EEEE, d MMMM", Locale.ENGLISH));
+        // Bold, and at a scale the font is baked at exactly (1 glyph pixel = 1 screen pixel): the window-derived
+        // scale (e.g. 1.13) was baked one step up and shrunk, which is what made the date look soft.
+        FontRenderer dateFont = FontRenderers.sf_bold != null ? FontRenderers.sf_bold : FontRenderers.sf_medium;
+        float dateScale = FontRenderer.snapScale(scaleUi * 1.05f);
+        float dateW = dateFont.getStringWidth(dateNow, dateScale);
+        float dateX = Math.round(w / 2f - dateW * dateScale * 0.5f);
+        Color dateCol = fade(DATE, 1f);
+        // soft drop shadow so it stays readable over a bright wallpaper
+        drawScaled(context, dateFont, dateNow, dateX + 0.6f, dateYNow + 0.8f, dateScale,
+                new Color(0, 0, 0, (int) (dateCol.getAlpha() * 0.45f)));
+        drawScaled(context, dateFont, dateNow, dateX, dateYNow, dateScale, dateCol);
+        float clockScaleNow = scaleUi * 1.25f;   // full size in the menu too, only higher up
+        float clockW = clockFontNow.getStringWidth(time, clockScaleNow);
+        drawScaled(context, clockFontNow, time, w / 2f - clockW * clockScaleNow * 0.5f, dateYNow + 20f * scaleUi,
+                clockScaleNow, fade(CLOCK, 1f));
+
         if (presence <= 0.004f) return;
 
         // The lift is proportional to the window, so the block leaves the screen at any resolution rather than
@@ -141,25 +167,8 @@ public class MainMenuScreen extends Screen {
         matrices.translate(0f, -lift);
 
         float cx = w / 2f;
-        float scale = uiScale(w, h);
 
-        LocalDateTime now = LocalDateTime.now();
-        String date = now.format(DateTimeFormatter.ofPattern("EEEE, d MMMM", Locale.ENGLISH));
-        String clock = now.format(DateTimeFormatter.ofPattern("HH:mm"));
-
-        /* Date, above the clock and much smaller. */
-        FontRenderer dateFont = FontRenderers.sf_medium;
-        float dateWidth = dateFont.getStringWidth(date, scale);
-        float dateY = h * CLOCK_Y;
-        drawScaled(context, dateFont, date, cx - dateWidth * scale * 0.5f, dateY, scale, fade(DATE, presence));
-
-        /* The clock: the biggest thing on the screen. */
-        FontRenderer clockFont = FontRenderers.brand != null ? FontRenderers.brand : FontRenderers.sf_bold_big;
-        float clockScale = scale * 1.25f;
-        float clockWidth = clockFont.getStringWidth(clock, clockScale);
-        float clockY = dateY + 20f * scale;
-        drawScaled(context, clockFont, clock, cx - clockWidth * clockScale * 0.5f, clockY, clockScale,
-                fade(CLOCK, presence));
+        /* The date and the clock are drawn above, outside this rising block - they stay when the menu opens. */
 
         /* The now-playing card. */
         MenuMusicPanel.render(context, cx, musicTop(h), presence, mouseX, mouseY);

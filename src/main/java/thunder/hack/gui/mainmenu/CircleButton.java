@@ -77,9 +77,11 @@ public final class CircleButton {
 
         boolean over = progress > 0.75f && inside(mouseX, mouseY, drawX, cy, size / 2f + 3f);
         hover = CloudanAnimationEngine.approach(hover, over ? 1f : 0f, 90f, delta);
+        // the size rides a spring: it swells past its hover size a touch and settles, and a click squashes it
+        float swell = growSpring.update(over ? 1f : 0f, delta);
 
         // Grows by a tenth at most. Anything more and the row visibly reflows under the cursor.
-        float radiusNow = (size / 2f) * (1f + hover * 0.1f);
+        float radiusNow = (size / 2f) * (1f + swell * 0.1f) * pressSpring.update(1f, delta);
 
         this.x = drawX;
         this.y = cy;
@@ -98,27 +100,33 @@ public final class CircleButton {
             float r = radiusNow + grow;
             int a = Math.round(shadowAlpha * 0.22f * (1f - ring / 6f));
             if (a <= 0) continue;
-            Render2DEngine.drawRound(context, drawX - r, cy - r + 2f, r * 2f, r * 2f, r, new Color(0, 0, 0, a));
+            Render2DEngine.drawRoundSmooth(context, drawX - r, cy - r + 2f, r * 2f, r * 2f, r, new Color(0, 0, 0, a));
         }
 
         // Frosted glass, the same as every other menu panel: the wallpaper blurred under a neutral veil. No rim
         // and no accent colour - the button takes its colour from the wallpaper behind it, nothing else.
         MenuGlass.draw(context, left, top, diameter, diameter, radiusNow, shown, hover);
 
-        float glyph = diameter * 0.56f;
+
+        // the glyph grows and lifts a little on hover - the button "leans in"
+        float glyph = diameter * 0.56f * (1f + 0.07f * hover);
         Color icon = new Color(255, 255, 255, Math.round((226 + 29 * hover) * shown));
-        drawGlyph(context, drawX, cy, glyph, icon);
+        drawGlyph(context, drawX, cy - hover * 1f, glyph, icon);
 
         /* The label fades in under the button only while hovered - a row of five permanent captions is
-         * clutter, and the icons are recognisable enough to not need them at rest. */
+         * clutter, and the icons are recognisable enough to not need them at rest. It rises into place. */
         if (hover > 0.02f) {
             float labelAlpha = hover * shown;
             float width = FontRenderers.sf_medium_mini.getStringWidth(label);
             FontRenderers.sf_medium_mini.drawString(context, label,
-                    drawX - width / 2f, cy + radiusNow + 7f,
+                    drawX - width / 2f, cy + radiusNow + 7f + (1f - hover) * 5f,
                     new Color(255, 255, 255, Math.round(230 * labelAlpha)).getRGB());
         }
     }
+
+    private final thunder.hack.utility.render.core.Spring growSpring = new thunder.hack.utility.render.core.Spring(260f, 20f, 0f);
+    private final thunder.hack.utility.render.core.Spring pressSpring = new thunder.hack.utility.render.core.Spring(420f, 16f, 1f);
+
 
     /* ------------------------------------------------------------------ */
     /* Glyphs                                                              */
@@ -175,7 +183,7 @@ public final class CircleButton {
                              float gx, float gy, float radius, Color color) {
         float r = radius / GRID * size;
         float x = at(cx, size, gx), y = at(cy, size, gy);
-        Render2DEngine.drawRound(context, x - r, y - r, r * 2f, r * 2f, r, color);
+        Render2DEngine.drawRoundSmooth(context, x - r, y - r, r * 2f, r * 2f, r, color);
     }
 
     /**
@@ -200,7 +208,7 @@ public final class CircleButton {
         for (int i = 0; i <= steps; i++) {
             double a = Math.toRadians(from + (to - from) * i / (double) steps);
             float px = x + (float) Math.sin(a) * mid, py = y - (float) Math.cos(a) * mid;
-            Render2DEngine.drawRound(context, px - dot, py - dot, dot * 2f, dot * 2f, dot, color);
+            Render2DEngine.drawRoundSmooth(context, px - dot, py - dot, dot * 2f, dot * 2f, dot, color);
         }
     }
 
@@ -209,7 +217,7 @@ public final class CircleButton {
                             float gx, float gy, float w, float h, float round, Color color) {
         float x = at(cx, size, gx), y = at(cy, size, gy);
         float ww = w / GRID * size, hh = h / GRID * size;
-        Render2DEngine.drawRound(context, x - ww / 2f, y - hh / 2f, ww, hh, round / GRID * size, color);
+        Render2DEngine.drawRoundSmooth(context, x - ww / 2f, y - hh / 2f, ww, hh, round / GRID * size, color);
     }
 
     /* ------------------------------------------------------------------ */
@@ -285,6 +293,7 @@ public final class CircleButton {
 
     public boolean click(double mx, double my) {
         if (!covers(mx, my)) return false;
+        pressSpring.velocity = -2.4f;   // a press: squash, then bounce back
         action.run();
         return true;
     }
@@ -294,5 +303,7 @@ public final class CircleButton {
         hover = 0f;
         lastFrame = 0L;
         radius = 0f;
+        growSpring.snap(0f);
+        pressSpring.snap(1f);
     }
 }

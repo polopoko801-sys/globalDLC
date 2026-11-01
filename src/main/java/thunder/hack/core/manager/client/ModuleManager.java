@@ -412,13 +412,27 @@ public class ModuleManager implements IManager {
         HudElement.anyHovered = false;
         // Isolate each element: one HUD element throwing (e.g. a null on some servers/gamemodes like
         // duels) previously aborted the whole forEach, making the ENTIRE HUD vanish with no crash.
-        modules.stream().filter(Module::isEnabled).forEach(module -> {
+        // Two passes. World overlays first (Trails, ESP, particles, Backtrack boxes - anything projected from the
+        // world), then a NEW ROOT LAYER, then every HUD element. Since 1.21.6 GUI draws are batched inside a layer
+        // and may be reordered, so with one pass the trails were drawn over KeyBinds, the inventory HUD and the
+        // potions. A separate layer puts the HUD strictly on top, whatever the module order.
+        for (Module module : modules) {
+            if (!module.isEnabled() || module instanceof HudElement) continue;
             try {
                 module.onRender2D(context);
             } catch (Exception ex) {
                 reportOnce(module, "onRender2D", ex);
             }
-        });
+        }
+        context.createNewRootLayer();
+        for (Module module : modules) {
+            if (!module.isEnabled() || !(module instanceof HudElement)) continue;
+            try {
+                module.onRender2D(context);
+            } catch (Exception ex) {
+                reportOnce(module, "onRender2D", ex);
+            }
+        }
         if (!HudElement.anyHovered && !ClickGUI.anyHovered)
             if (GLFW.glfwGetPlatform() != GLFW.GLFW_PLATFORM_WAYLAND) {
                 GLFW.glfwSetCursor(mc.getWindow().getHandle(), thunder.hack.utility.render.Cursors.get(GLFW.GLFW_ARROW_CURSOR));

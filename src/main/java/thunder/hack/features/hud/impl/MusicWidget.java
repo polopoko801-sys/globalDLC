@@ -777,6 +777,10 @@ public class MusicWidget extends HudElement {
         long sessionLength = fromSpotifyWindow ? thunder.hack.utility.spotify.TitleClock.duration() : 0L;
         var found = fallbackAvailable ? thunder.hack.utility.spotify.Lyrics.get(fallbackTitle, fallbackArtist, sessionLength) : null;
         long length = sessionLength > 0 ? sessionLength : found != null ? found.durationMs() : 0L;
+        // lrclib can return a different cut of the song (radio edit, 3:00) than the one playing. The position was
+        // then clamped to that length and the clock stopped dead at 3:00 while the song went on. Never cut the
+        // real position: a too-short length grows to it instead.
+        if (length > 0 && position > length) length = position;
 
         return new View(
                 fallbackAvailable, false,

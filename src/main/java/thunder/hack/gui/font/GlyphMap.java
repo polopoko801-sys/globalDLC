@@ -130,6 +130,7 @@ class GlyphMap {
         // best-quality glyph rasterisation with exact outlines (no stroke normalisation nudging edges around)
         g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
         g2d.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        g2d.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
 
         for (Glyph glyph : glyphs1) {
             g2d.setFont(getFontForGlyph(glyph.value()));
@@ -139,6 +140,14 @@ class GlyphMap {
         }
         registerBufferedImageTexture(bindToTexture, bi);
         generated = true;
+    }
+
+    /** Coverage -> alpha with a 1/1.35 gamma; 0 and 255 stay exact so solid stems and empty space are untouched. */
+    private static final int[] ALPHA_GAMMA = new int[256];
+
+    static {
+        for (int i = 0; i < 256; i++)
+            ALPHA_GAMMA[i] = (int) Math.round(255.0 * Math.pow(i / 255.0, 1.0 / 1.35));
     }
 
     public static void registerBufferedImageTexture(Identifier i, BufferedImage bi) {
@@ -170,7 +179,10 @@ class GlyphMap {
             for (int y = 0; y < oh; y++) {
                 for (int x = 0; x < ow; x++) {
                     _ra.getDataElements(x, y, _d);
-                    int a = _cm.getAlpha(_d);
+                    // Java2D's grayscale AA writes linear coverage, but the GUI blends in sRGB space - edges come
+                    // out too light and the text looks thin and soft. A gamma curve on the coverage (what
+                    // FreeType / DirectWrite do) restores full-weight, crisp edges without touching the shapes.
+                    int a = ALPHA_GAMMA[_cm.getAlpha(_d)];
                     int r = _cm.getRed(_d);
                     int g = _cm.getGreen(_d);
                     int b = _cm.getBlue(_d);

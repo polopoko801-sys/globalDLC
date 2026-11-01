@@ -21,6 +21,8 @@ public final class SoundFX extends Module {
     public final Setting<HitSound> hitSound = new Setting<>("HitSound", HitSound.OFF);
     public final Setting<KillSound> killSound = new Setting<>("KillSound", KillSound.OFF);
     public final Setting<ScrollSound> scrollSound = new Setting<>("ScrollSound", ScrollSound.KeyBoard);
+    /** Key click while typing in the client's screens (search, text fields, windows). */
+    public final Setting<Boolean> typingSound = new Setting<>("TypingSound", true);
 
     @EventHandler
     @SuppressWarnings("unused")

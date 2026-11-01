@@ -1211,12 +1211,7 @@ public class Render3DEngine {
                 java.awt.Color base = HudEditor.getColor((int) (180 * offset));
                 // larger than the old disc: most of ghostGlow is soft halo, and the halos must overlap
                 float scale = Math.max(0.24f * (offset), 0.2f) * 1.7f;
-                // Three layers per soul, so the trail glows instead of just being drawn: a wide faint bloom that
-                // melts the whole streak into one light, the coloured body, and a small near-white hot core.
-                ghostSprite(buffer, matrix, scale * 2.6f, Render2DEngine.applyOpacity(base, offset * 0.32f).getRGB());
                 ghostSprite(buffer, matrix, scale, Render2DEngine.applyOpacity(base, offset).getRGB());
-                java.awt.Color hot = Render2DEngine.interpolateColorC(base, java.awt.Color.WHITE, 0.6f);
-                ghostSprite(buffer, matrix, scale * 0.42f, Render2DEngine.applyOpacity(hot, Math.min(1f, offset * 1.1f)).getRGB());
                 matrices.pop();
             }
         }

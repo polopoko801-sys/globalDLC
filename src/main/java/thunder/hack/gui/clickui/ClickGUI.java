@@ -107,6 +107,16 @@ public class ClickGUI extends Screen {
     private boolean swallowChar;
     private final Map<Module, List<AbstractElement>> elementCache = new HashMap<>();
 
+    /** A click ripple on a card: when it started and where (relative to the card). */
+    private record Ripple(long start, float x, float y) {
+    }
+
+    private static final float RIPPLE_MS = 450f;
+    /** Header subtitle cross-fade and the scrollbar's wake-up glow. */
+    private String subtitleShown = "";
+    private long subtitleChangedAt;
+    private float scrollbarAnim;
+    private final Map<Module, Ripple> ripples = new HashMap<>();
     private final Map<Module, Float> cardHoverAnim = new HashMap<>();
     private final Map<Module, Float> cardEnableAnim = new HashMap<>();
     private final Map<String, Float> rowHoverAnim = new HashMap<>();
@@ -366,10 +376,12 @@ public class ClickGUI extends Screen {
             default -> "edithud";
         };
         Color iconCol = Render2DEngine.interpolateColorC(Render2DEngine.interpolateColorC(TEXT_DIM, TEXT, hv), Color.WHITE, act);
-        drawIcon(context, iconName, cx + 2.5f, cy + 2.5f, chip - 5f, iconCol);
+        // hover: the icon grows a little inside its chip and the label leans right, so the row answers the mouse
+        float grow = 1.2f * hv;
+        drawIcon(context, iconName, cx + 2.5f - grow / 2f, cy + 2.5f - grow / 2f, chip - 5f + grow, iconCol);
 
         Color textColor = Render2DEngine.interpolateColorC(Render2DEngine.interpolateColorC(TEXT_DIM, TEXT, hv), TEXT, act);
-        FontRenderers.sf_medium.drawString(context, r.label(), r.x() + 26f, r.y() + 7f, textColor.getRGB());
+        FontRenderers.sf_medium.drawString(context, r.label(), r.x() + 26f + 2.5f * Math.max(hv, act), r.y() + 7f, textColor.getRGB());
 
     }
 
@@ -421,12 +433,26 @@ public class ClickGUI extends Screen {
         // ---- header: icon + title + subtitle ----
         String title = searching ? "Search" : selectedCategory.getName();
         String headIcon = searching ? "search" : categoryIcon(selectedCategory);
-        Render2DEngine.drawRound(context, cx + 14f, py + 12f, 22f, 22f, 7f, Render2DEngine.injectAlpha(accent(), 60));
-        drawIcon(context, headIcon, cx + 18f, py + 16f, 14f, accentText());
-        FontRenderers.monsterrat.drawString(context, title, cx + 44f, py + 13f, TEXT.getRGB());
+        // category change: the header icon pops (ease-out-back) and the title slides in from the left as it fades up
+        float headT = Math.clamp((System.currentTimeMillis() - catChangedAt) / 380f, 0f, 1f);
+        float pop = (float) EaseOutBack.dropAnimation(headT);
+        float chipS = 22f * (0.6f + 0.4f * pop), iconS = 14f * (0.6f + 0.4f * pop);
+        float chipCx = cx + 25f, chipCy = py + 23f;
+        Render2DEngine.drawRound(context, chipCx - chipS / 2f, chipCy - chipS / 2f, chipS, chipS, 7f * chipS / 22f,
+                Render2DEngine.injectAlpha(accent(), 60));
+        drawIcon(context, headIcon, chipCx - iconS / 2f, chipCy - iconS / 2f, iconS, accentText());
+        float titleE = easeOutCubic(headT);
+        FontRenderers.monsterrat.drawString(context, title, cx + 44f - (1f - titleE) * 10f, py + 13f,
+                Render2DEngine.injectAlpha(TEXT, (int) (TEXT.getAlpha() * titleE)).getRGB());
 
         String subtitle = hoveredDescPrev != null ? hoveredDescPrev
                 : "LMB toggle  •  RMB settings  •  MMB bind  •  type to search";
+        // the line under the title cross-fades when it changes (hovering card to card) instead of flicking
+        if (!subtitle.equals(subtitleShown)) {
+            subtitleShown = subtitle;
+            subtitleChangedAt = System.currentTimeMillis();
+        }
+        float subT = Math.clamp((System.currentTimeMillis() - subtitleChangedAt) / 180f, 0f, 1f);
 
         // ---- search pill (always visible; typing anywhere also starts a search) ----
         searchW = 132f;
@@ -447,15 +473,19 @@ public class ClickGUI extends Screen {
         } else {
             String shown = trimLeft(FontRenderers.sf_medium_mini, searchText, searchW - 30f);
             FontRenderers.sf_medium_mini.drawString(context, shown, searchX + 21f, searchY + 7f, TEXT.getRGB());
-            if (searchActive && (System.currentTimeMillis() / 500) % 2 == 0) {
+            if (searchActive) {
+                // caret breathes in and out instead of blinking hard on/off
+                float blink = 0.5f + 0.5f * (float) Math.cos(System.currentTimeMillis() / 1000.0 * Math.PI * 2 * 0.9);
                 float tw = FontRenderers.sf_medium_mini.getStringWidth(shown);
-                Render2DEngine.drawRect(context, searchX + 22f + tw, searchY + 5f, 0.8f, 10f, accentText());
+                Render2DEngine.drawRect(context, searchX + 22f + tw, searchY + 5f, 0.8f, 10f,
+                        Render2DEngine.injectAlpha(accentText(), (int) (255 * blink)));
             }
         }
 
         float subMaxW = searchX - (cx + 44f) - 10f;
         FontRenderers.sf_medium_mini.drawString(context, trim(FontRenderers.sf_medium_mini, subtitle, subMaxW),
-                cx + 44f, py + 27f, TEXT_DIM.getRGB());
+                cx + 44f, py + 27f + (1f - subT) * 2f,
+                Render2DEngine.injectAlpha(TEXT_DIM, (int) (TEXT_DIM.getAlpha() * easeOutCubic(subT))).getRGB());
 
         Render2DEngine.drawRect(context, cx + 12f, py + HEADER_H - 1f, cw - 24f, 0.6f, HAIRLINE);
 
@@ -504,11 +534,19 @@ public class ClickGUI extends Screen {
             float trackH = viewH - 8f;
             float thumbH = Math.max(18f, trackH * (viewH / totalH));
             float thumbY = gy + (trackH - thumbH) * (-scrollGrid / maxScroll);
-            Render2DEngine.drawRound(context, cx + cw - 6f, thumbY, 2.5f, thumbH, 1.25f, new Color(255, 255, 255, 40));
+            // the thumb wakes up while scrolling or when the mouse is near it: wider and brighter, then settles
+            boolean near = Render2DEngine.isHovered(mouseX, mouseY, cx + cw - 14f, gridTop, 14f, gridBottom - gridTop);
+            boolean moving = Math.abs(scrollGridTarget - scrollGrid) > 0.5f;
+            scrollbarAnim = AnimationUtility.fast(scrollbarAnim, near || moving ? 1f : 0f, near || moving ? 14f : 4f);
+            float tw = 2.5f + 1.5f * scrollbarAnim;
+            Render2DEngine.drawRound(context, cx + cw - 4f - tw, thumbY, tw, thumbH, tw / 2f,
+                    Render2DEngine.interpolateColorC(new Color(255, 255, 255, 40), Render2DEngine.injectAlpha(accent(), 170), scrollbarAnim));
         }
 
         if (mods.isEmpty()) {
-            float mx = cx + cw / 2f, my = gy + viewH / 2f - 20f;
+            // the empty-search icon floats gently up and down
+            float bob = (float) Math.sin(System.currentTimeMillis() / 1000.0 * Math.PI) * 2.5f;
+            float mx = cx + cw / 2f, my = gy + viewH / 2f - 20f + bob;
             drawIcon(context, "search", mx - 12f, my, 24f, TEXT_MUTED);
             FontRenderers.sf_medium.drawCenteredString(context, "Nothing found for \"" + searchText + "\"", mx, my + 32f, TEXT_DIM.getRGB());
         }
@@ -530,6 +568,11 @@ public class ClickGUI extends Screen {
         float en = AnimationUtility.fast(cardEnableAnim.getOrDefault(m, on ? 1f : 0f), on ? 1f : 0f, 9f);
         cardEnableAnim.put(m, en);
         Color acc = accent();
+        // hover lift: the card rises a touch and its shadow deepens - drawing only, the hit box stays put
+        final float baseY = y;
+        y -= 1.5f * hv;
+        if (hv > 0.01f)
+            Render2DEngine.drawBlurredShadow(context, x + 2f, y + 4f, w - 4f, h - 2f, 12, new Color(0, 0, 0, (int) (70 * hv)));
 
         // body: soft white film, brighter on hover; enabled cards get an accent wash from the left
         if (en > 0.01f)
@@ -542,6 +585,22 @@ public class ClickGUI extends Screen {
             Render2DEngine.drawRect(context, x + 8f, y, w - 16f, 0.6f, Render2DEngine.injectAlpha(accentText(), (int) (120 * en)));
         } else {
             Render2DEngine.drawRect(context, x + 8f, y, w - 16f, 0.6f, new Color(255, 255, 255, (int) (18 + 22 * hv)));
+        }
+
+        // click ripple: a soft accent circle grows from where you clicked and fades out
+        Ripple rp = ripples.get(m);
+        if (rp != null) {
+            float t = (System.nanoTime() - rp.start()) / 1e6f / RIPPLE_MS;
+            if (t >= 1f) {
+                ripples.remove(m);
+            } else {
+                float e = easeOutCubic(t);
+                float r = Math.max(w, h) * 1.3f * e;
+                Render2DEngine.addWindow(context, x, y, x + w, y + h, 1.);
+                Render2DEngine.drawRound(context, x + rp.x() - r, y + rp.y() - r, r * 2f, r * 2f, r,
+                        Render2DEngine.injectAlpha(acc, (int) (70 * (1f - t))));
+                Render2DEngine.popWindow();
+            }
         }
 
         // icon chip (category icon; in search results it tells you where the module lives)
@@ -557,7 +616,9 @@ public class ClickGUI extends Screen {
         float swX = x + w - swW - 9f, swY = y + 13f;
         Render2DEngine.drawRound(context, swX, swY, swW, swH, swH / 2f, Render2DEngine.interpolateColorC(SWITCH_OFF, acc, en));
         float knob = swH - 4f;
-        Render2DEngine.drawRound(context, swX + 2f + (swW - knob - 4f) * en, swY + 2f, knob, knob, knob / 2f, Color.WHITE);
+        // springy knob: a small overshoot (ease-out-back) so the switch snaps over instead of sliding flat
+        float knobT = (float) Math.min(1.08, Math.max(-0.08, EaseOutBack.dropAnimation(en)));
+        Render2DEngine.drawRound(context, swX + 2f + (swW - knob - 4f) * knobT, swY + 2f, knob, knob, knob / 2f, Color.WHITE);
 
         // settings gear appears on hover, left of the switch
         if (hv > 0.02f && hasSettings(m))
@@ -591,7 +652,7 @@ public class ClickGUI extends Screen {
         Card c = new Card();
         c.module = m;
         c.x = x;
-        c.y = y;
+        c.y = baseY;
         c.w = w;
         c.h = h;
         cards.add(c);
@@ -612,8 +673,9 @@ public class ClickGUI extends Screen {
         paletteRects.clear();
 
         int n = ColorPalette.SWATCHES.size();
-        float dot = 15f, gap = 7f, barPadX = 11f, barH = 27f;
-        float rowW = n * dot + n * gap + 24f;
+        float dot = 14f, gap = 6f, barPadX = 11f, barH = 28f;
+        float resetW = 44f, sep = 10f;
+        float rowW = n * dot + (n - 1) * gap + sep + resetW;
         float barW = rowW + barPadX * 2f;
         float barX = px + (panelW - barW) / 2f;
         float barY = py + panelH + 9f;
@@ -626,48 +688,114 @@ public class ClickGUI extends Screen {
         Color active = ColorPalette.getActive();
         float x = barX + barPadX;
         float y = barY + (barH - dot) / 2f;
+        String tip = null;
+        float tipX = 0f;
 
         for (int i = 0; i < n; i++) {
             Color c = ColorPalette.SWATCHES.get(i);
-            boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, x, y, dot, dot);
+            boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, x - 2f, y - 2f, dot + 4f, dot + 4f);
             boolean selected = active != null && active.getRGB() == c.getRGB();
 
-            float grow = hovered ? 1.5f : 0f;
-            if (selected || hovered)
-                Render2DEngine.drawBlurredShadow(context, x - 2f, y - 2f, dot + 4f, dot + 4f, 8,
-                        Render2DEngine.injectAlpha(c, selected ? 150 : 90));
-            Render2DEngine.drawRound(context, x - grow, y - grow, dot + grow * 2f, dot + grow * 2f, (dot + grow * 2f) / 2f, c);
-            if (selected)
-                Render2DEngine.drawRound(context, x + 4.5f, y + 4.5f, dot - 9f, dot - 9f, (dot - 9f) / 2f, Color.WHITE);
+            // eased hover and selection, per swatch
+            float hv = AnimationUtility.fast(swatchHover[i], hovered ? 1f : 0f, 18f);
+            swatchHover[i] = hv;
+            float sl = AnimationUtility.fast(swatchSel[i], selected ? 1f : 0f, 14f);
+            swatchSel[i] = sl;
 
+            float grow = 1.8f * hv;
+            float s = dot + grow * 2f;
+            if (sl > 0.02f || hv > 0.02f)
+                Render2DEngine.drawBlurredShadow(context, x - 3f, y - 3f, dot + 6f, dot + 6f, 9,
+                        Render2DEngine.injectAlpha(c, (int) (60 * hv + 120 * sl)));
+            // selected: a white ring around the swatch, drawn as a slightly bigger white disc behind it
+            if (sl > 0.02f) {
+                float ring = 2.2f * sl;
+                Render2DEngine.drawRound(context, x - grow - ring, y - grow - ring, s + ring * 2f, s + ring * 2f,
+                        (s + ring * 2f) / 2f, Render2DEngine.injectAlpha(Color.WHITE, (int) (235 * sl)));
+                Render2DEngine.drawRound(context, x - grow - ring * 0.45f, y - grow - ring * 0.45f, s + ring * 0.9f, s + ring * 0.9f,
+                        (s + ring * 0.9f) / 2f, new Color(18, 18, 24, (int) (255 * sl)));
+            }
+            Render2DEngine.drawRound(context, x - grow, y - grow, s, s, s / 2f, c);
+            // soft highlight on the top of every dot, so they read as glossy beads rather than flat circles
+            Render2DEngine.drawRound(context, x - grow + s * 0.22f, y - grow + s * 0.12f, s * 0.56f, s * 0.3f, s * 0.15f,
+                    new Color(255, 255, 255, 55));
+
+            if (hovered) {
+                tip = ColorPalette.NAMES.get(i);
+                tipX = x + dot / 2f;
+            }
             paletteRects.add(new float[]{x, y, dot, dot, i});
             x += dot + gap;
         }
+        x += sep - gap;
 
-        float rw = 24f;
-        boolean resetHov = Render2DEngine.isHovered(mouseX, mouseY, x, y, rw, dot);
-        Render2DEngine.drawRound(context, x, y, rw, dot, 5f, resetHov ? CARD_HOVER : CARD);
-        FontRenderers.sf_medium_mini.drawCenteredString(context, "RESET", x + rw / 2f, y + dot / 2f - 3f,
-                (resetHov ? TEXT : TEXT_DIM).getRGB());
-        paletteRects.add(new float[]{x, y, rw, dot, -1});
+        // divider
+        Render2DEngine.drawRect(context, x - sep / 2f, barY + 7f, 0.6f, barH - 14f, HAIRLINE);
+
+
+        Render2DEngine.drawRect(context, x - sep / 2f, barY + 7f, 0.6f, barH - 14f, HAIRLINE);
+
+        // reset
+        float ry = barY + (barH - 16f) / 2f;
+        boolean resetHov = Render2DEngine.isHovered(mouseX, mouseY, x, ry, resetW, 16f);
+        resetHover = AnimationUtility.fast(resetHover, resetHov ? 1f : 0f, 16f);
+        Render2DEngine.drawRound(context, x, ry, resetW, 16f, 5f, Render2DEngine.interpolateColorC(CARD, CARD_HOVER, resetHover));
+        // a little circular arrow
+        float cx0 = x + 9f, cy0 = ry + 8f;
+        Color rc = Render2DEngine.interpolateColorC(TEXT_DIM, TEXT, resetHover);
+        for (int k = 0; k < 14; k++) {
+            double a = Math.toRadians(-60 + k * 20 + resetHover * 90);
+            Render2DEngine.drawRound(context, (float) (cx0 + Math.cos(a) * 3.6f) - 0.7f, (float) (cy0 + Math.sin(a) * 3.6f) - 0.7f, 1.4f, 1.4f, 0.7f, rc);
+        }
+        FontRenderers.sf_medium_mini.drawString(context, "Reset", x + 16f, ry + 5.5f, rc.getRGB());
+        if (resetHov) {
+            tip = "Default colours";
+            tipX = x + resetW / 2f;
+        }
+        paletteRects.add(new float[]{x, ry, resetW, 16f, -1});
+
+        // tooltip under the bar
+        if (tip != null) {
+            float tw = FontRenderers.sf_medium_mini.getStringWidth(tip) + 10f;
+            float tx = tipX - tw / 2f, ty = barY + barH + 4f;
+            Render2DEngine.drawRound(context, tx, ty, tw, 12f, 4f, new Color(16, 16, 22, 230));
+            FontRenderers.sf_medium_mini.drawString(context, tip, tx + 5f, ty + 3.5f, TEXT.getRGB());
+        }
     }
+
+    private final float[] swatchHover = new float[32];
+    private final float[] swatchSel = new float[32];
+    private float resetHover;
 
     // ------------------------------------------------------------------ settings panel
 
     private void renderSettings(DrawContext context, int mouseX, int mouseY, float px, float py, float panelW, float panelH, float delta) {
-        if (settingsAnim < 0.01f || settingsModule == null) return;
+        // While the panel closes, settingsModule is already null - keep drawing the module it showed so it can
+        // slide away, shrink and fade out instead of vanishing in one frame.
+        Module sm = settingsModule != null ? settingsModule : settingsShown;
+        if (settingsAnim < 0.01f || sm == null) return;
+        float vis = easeInOutCubic(settingsAnim);
+        var panelM = context.getMatrices();
+        panelM.pushMatrix();
+        try {
+        thunder.hack.gui.font.FontRenderer.globalAlpha = vis;
 
         float sw = mc.getWindow().getScaledWidth();
         spW = 172f;
-        List<AbstractElement> els = getElements(settingsModule);
+        List<AbstractElement> els = getElements(sm);
         float contentTotal = 0f;
         for (AbstractElement el : els) if (el.isVisible()) contentTotal += elementHeight(el);
         float headH = 34f;
         spH = Math.max(60f, Math.min(panelH, headH + contentTotal + 8f));
         spY = py;
         float targetX = px + panelW + 8f;
-        float animatedX = targetX - (1f - easeInOutCubic(settingsAnim)) * 26f;
+        float animatedX = targetX - (1f - vis) * 34f;
         spX = Math.min(animatedX, sw - spW - 4f);
+        // grows in from 94% / shrinks back to it, anchored on the panel's left edge (the side it slides from)
+        float sc = 0.94f + 0.06f * vis;
+        panelM.translate(spX, spY + spH / 2f);
+        panelM.scale(sc, sc);
+        panelM.translate(-spX, -(spY + spH / 2f));
 
         if (Render2DEngine.isHovered(mouseX, mouseY, spX, spY, spW, spH))
             anyHovered = true;
@@ -677,17 +805,17 @@ public class ClickGUI extends Screen {
         // header: icon chip, name, enable switch, close
         Color acc = accent();
         Render2DEngine.drawRound(context, spX + 9f, spY + 9f, 16f, 16f, 5f, Render2DEngine.injectAlpha(acc, 90));
-        drawIcon(context, categoryIcon(settingsModule.getCategory()), spX + 12f, spY + 12f, 10f, Color.WHITE);
+        drawIcon(context, categoryIcon(sm.getCategory()), spX + 12f, spY + 12f, 10f, Color.WHITE);
 
         spCloseX = spX + spW - 17f;
         spCloseY = spY + 12f;
         spSwitchX = spCloseX - 28f;
         spSwitchY = spY + 11f;
 
-        String title = trim(FontRenderers.sf_medium, settingsModule.getName(), spSwitchX - (spX + 31f) - 4f);
+        String title = trim(FontRenderers.sf_medium, sm.getName(), spSwitchX - (spX + 31f) - 4f);
         FontRenderers.sf_medium.drawString(context, title, spX + 31f, spY + 14f, TEXT.getRGB());
 
-        float en = cardEnableAnim.getOrDefault(settingsModule, settingsModule.isEnabled() ? 1f : 0f);
+        float en = cardEnableAnim.getOrDefault(sm, sm.isEnabled() ? 1f : 0f);
         Render2DEngine.drawRound(context, spSwitchX, spSwitchY, 22f, 12f, 6f, Render2DEngine.interpolateColorC(SWITCH_OFF, acc, en));
         Render2DEngine.drawRound(context, spSwitchX + 2f + 10f * en, spSwitchY + 2f, 8f, 8f, 4f, Color.WHITE);
 
@@ -742,11 +870,11 @@ public class ClickGUI extends Screen {
                 var m = context.getMatrices();
                 m.pushMatrix();
                 m.translate(-(1f - reveal) * 14f, 0f);
-                thunder.hack.gui.font.FontRenderer.globalAlpha = reveal;
+                thunder.hack.gui.font.FontRenderer.globalAlpha = reveal * vis;
                 try {
                     el.render(context, mouseX, mouseY, delta);
                 } finally {
-                    thunder.hack.gui.font.FontRenderer.globalAlpha = 1f;
+                    thunder.hack.gui.font.FontRenderer.globalAlpha = vis;
                     m.popMatrix();
                 }
             }
@@ -756,6 +884,10 @@ public class ClickGUI extends Screen {
 
         if (contentTotal <= 0.5f)
             FontRenderers.sf_medium_mini.drawString(context, "No configurable settings.", spX + 10f, top + 6f, TEXT_DIM.getRGB());
+        } finally {
+            thunder.hack.gui.font.FontRenderer.globalAlpha = 1f;
+            panelM.popMatrix();
+        }
     }
 
     private float elementHeight(AbstractElement el) {
@@ -791,6 +923,7 @@ public class ClickGUI extends Screen {
         // every row of the newly opened module reveals again
         revealedAt.clear();
         settingsModule = module;
+        settingsShown = module;
         scrollSettings = scrollSettingsTarget = 0f;
     }
 
@@ -798,6 +931,9 @@ public class ClickGUI extends Screen {
     public void devOpenSettings(Module module) {
         openSettings(module);
     }
+
+    /** The module the settings panel last showed - drawn while it animates closed. */
+    private Module settingsShown;
 
     private void closeSettings() {
         if (settingsModule != null)
@@ -877,6 +1013,7 @@ public class ClickGUI extends Screen {
             int index = (int) r[4];
             if (index < 0) ColorPalette.reset();
             else ColorPalette.apply(ColorPalette.SWATCHES.get(index));
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP, 0.5f);
             return true;
         }
 
@@ -919,7 +1056,10 @@ public class ClickGUI extends Screen {
                     if (settingsModule == c.module) closeSettings();
                     else openSettings(c.module);
                 } else if (button == 0) {
-                    if (c.module.isToggleable()) c.module.toggle();
+                    if (c.module.isToggleable()) {
+                        c.module.toggle();
+                        ripples.put(c.module, new Ripple(System.nanoTime(), (float) mx - c.x, (float) my - c.y));
+                    }
                 }
                 return true;
             }

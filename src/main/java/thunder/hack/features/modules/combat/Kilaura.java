@@ -837,6 +837,8 @@ public class Kilaura extends Module {
         ArrayList<LivingEntity> entity = new ArrayList<>();
         for (Entity e : mc.world.getEntities()) {
             if (!(e instanceof LivingEntity player)) continue;
+            // FakeLag's ghost of yourself - the server has no such entity, a hit on it is a hit on nothing
+            if (e.getId() == thunder.hack.features.modules.movement.FakeLag.GHOST_ID) continue;
             if (player.getHealth() > 0.0f && player.isAlive()) {
                 if (!(mc.player.distanceTo(player) <= range.getValue() + preAimRange.getValue()) || !canAttack(player)) continue;
                 entity.add(player);
@@ -854,6 +856,9 @@ public class Kilaura extends Module {
             case BlockingStatus -> entity.sort(Comparator.comparing(LivingEntity::isUsingItem).reversed());
         }
         if (entity.isEmpty()) return null;
+        // Backtrack is holding someone frozen: keep hitting that one while it is in range, whatever the sort says
+        int frozen = ModuleManager.backtrack.frozenId();
+        for (LivingEntity e : entity) if (e.getId() == frozen) return e;
         return entity.get(0);
     }
 

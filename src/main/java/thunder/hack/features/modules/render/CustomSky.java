@@ -23,10 +23,12 @@ public class CustomSky extends Module {
     }
 
     public enum SkyMode {Vanilla, Plasma, RainbowPlasma, Void, Nebula, Aurora, EnergyWaves, CyberSky, Galaxy,
-        Sunset, Inferno, Storm, BlackHole, Synthwave, Crystal, Warp, Ocean, Daydream, Custom}
+        Sunset, Inferno, Storm, BlackHole, Synthwave, Crystal, Warp, Ocean, Daydream,
+        GlowOrbs, Fireflies, Moonlight, Snowfall, Bokeh, Custom}
 
     public enum Style {Plasma, Void, Nebula, Aurora, EnergyWaves, CyberSky, Galaxy,
-        Sunset, Inferno, Storm, BlackHole, Synthwave, Crystal, Warp, Ocean, Daydream}
+        Sunset, Inferno, Storm, BlackHole, Synthwave, Crystal, Warp, Ocean, Daydream,
+        GlowOrbs, Fireflies, Moonlight, Snowfall, Bokeh}
 
     public enum ColorMode {Single, Dual, Gradient, Rainbow}
 
@@ -114,6 +116,12 @@ public class CustomSky extends Module {
             case Warp -> { style = 16; cMode = 2; p = new Color(90, 140, 255); s = new Color(120, 240, 255); a = new Color(255, 255, 255); }
             case Ocean -> { style = 17; cMode = 2; p = new Color(0, 30, 70); s = new Color(20, 140, 180); a = new Color(170, 255, 240); }
             case Daydream -> { style = 18; cMode = 2; p = new Color(60, 130, 240); s = new Color(190, 220, 255); a = new Color(170, 180, 210); }
+            // black skies with light: white glowing spots, fireflies, a big moon, glowing snow, bokeh
+            case GlowOrbs -> { style = 19; cMode = 2; p = new Color(255, 255, 255); s = new Color(220, 230, 255); a = new Color(255, 255, 255); }
+            case Fireflies -> { style = 20; cMode = 2; p = new Color(255, 210, 90); s = new Color(190, 255, 120); a = new Color(255, 240, 180); }
+            case Moonlight -> { style = 21; cMode = 2; p = new Color(200, 210, 240); s = new Color(150, 170, 230); a = new Color(255, 255, 255); }
+            case Snowfall -> { style = 22; cMode = 2; p = new Color(255, 255, 255); s = new Color(200, 220, 255); a = new Color(255, 255, 255); }
+            case Bokeh -> { style = 23; cMode = 2; p = new Color(120, 170, 255); s = new Color(255, 140, 210); a = new Color(255, 230, 160); }
             case Custom -> style = switch (customStyle.getValue()) {
                 case Plasma -> 1;
                 case Void -> 3;
@@ -131,6 +139,11 @@ public class CustomSky extends Module {
                 case Warp -> 16;
                 case Ocean -> 17;
                 case Daydream -> 18;
+                case GlowOrbs -> 19;
+                case Fireflies -> 20;
+                case Moonlight -> 21;
+                case Snowfall -> 22;
+                case Bokeh -> 23;
             };
             default -> style = 1;
         }

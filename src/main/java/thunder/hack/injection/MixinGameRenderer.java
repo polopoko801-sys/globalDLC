@@ -37,6 +37,12 @@ import static thunder.hack.features.modules.Module.mc;
 
 @Mixin(GameRenderer.class)
 public abstract class MixinGameRenderer {
+    /** KillEffect Ninja cinematic: the camera is out of your head, so no first-person hand on screen. */
+    @org.spongepowered.asm.mixin.injection.Inject(method = "renderHand", at = @org.spongepowered.asm.mixin.injection.At("HEAD"), cancellable = true)
+    private void hideHandInCinematic(float tickProgress, boolean sleeping, Matrix4f matrix, CallbackInfo ci) {
+        if (thunder.hack.features.modules.render.KillEffect.cinematicActive()) ci.cancel();
+    }
+
 
     // 1.21.11: GameRenderer.zoom/zoomX/zoomY removed (spyglass zoom refactored); viewDistance -> viewDistanceBlocks
     @Shadow

@@ -1,34 +1,41 @@
 package thunder.hack.gui.clickui.impl;
 
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.util.math.MatrixStack;
 import thunder.hack.ThunderHack;
+import thunder.hack.features.modules.client.HudEditor;
 import thunder.hack.gui.clickui.AbstractElement;
 import thunder.hack.gui.font.FontRenderers;
 import thunder.hack.setting.Setting;
 import thunder.hack.setting.impl.ColorSetting;
-import thunder.hack.utility.math.MathUtility;
+import thunder.hack.utility.ColorPalette;
 import thunder.hack.utility.render.Render2DEngine;
+import thunder.hack.utility.render.animation.AnimationUtility;
 
 import java.awt.*;
 
+/**
+ * A colour setting: its name and a preview pill; click it to open the picker underneath -
+ * saturation/brightness field, hue and opacity sliders with round knobs, a row of quick colours, the hex code
+ * and pill buttons (Copy, Paste, Rainbow, Reset). Opens and closes with an eased height.
+ */
 public class ColorPickerElement extends AbstractElement {
-    private float hue;
-    private float saturation;
-    private float brightness;
+    // picker state, all 0..1 (alpha 0..255)
+    private float hue, saturation, brightness;
     private int alpha;
+    private boolean sbFocused, hueFocused, alphaFocused;
+    private int lastSynced;
 
-    private boolean afocused;
-    private boolean hfocused;
-    private boolean sbfocused;
-
-    private float spos, bpos, hpos, apos;
-
-    private Color prevColor;
-
-    private boolean firstInit, extended;
+    private boolean extended;
+    private float open;            // 0 closed .. 1 open, eased
+    private float headerHover;
+    private final float[] btnHover = new float[4];
 
     private final Setting colorSetting;
+
+    // geometry (relative to the element), shared by render and click
+    private static final float HEAD = 15f, FIELD_H = 46f, SWATCH_ROW = 12f, BTN_ROW = 13f, PAD = 6f;
+    private static final float FULL = HEAD + 4f + FIELD_H + 6f + SWATCH_ROW + 4f + BTN_ROW + 5f;
+    private static final String[] BTN = {"Copy", "Paste", "RB", "Reset"};
 
     public ColorSetting getColorSetting() {
         return (ColorSetting) colorSetting.getValue();
@@ -37,177 +44,246 @@ public class ColorPickerElement extends AbstractElement {
     public ColorPickerElement(Setting setting) {
         super(setting);
         this.colorSetting = setting;
-        prevColor = getColorSetting().getColorObject();
-        updatePos();
-        firstInit = true;
+        syncFromSetting();
     }
 
-    @Override
-    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-
-        DrawContext matrixStack = context;
-
-        // The whole row, measured from the element's REAL width. It used to be a hardcoded 90 wide while
-        // the swatch is drawn at x + width - 22, so on any panel wider than that the swatch sat outside
-        // its own hit box: you could see the colour, but clicking it did nothing and you had to hit the
-        // name instead.
-        boolean colorHovered = Render2DEngine.isHovered(mouseX, mouseY, x, y + 4.5f, width, 8);
-
-        FontRenderers.sf_medium_mini.drawString(matrixStack, setting.getName(), x + 6, y + 8, new Color(-1).getRGB());
-
-        Render2DEngine.drawBlurredShadow(matrixStack, x + width - 22f, y + 5f, 14, 7, colorHovered ? 6 : 10, getColorSetting().getColorObject());
-        if (colorHovered)
-            Render2DEngine.drawRound(matrixStack, x + width - 22.5f, y + 4.5f, 15, 8, 1, getColorSetting().getColorObject());
-        else
-            Render2DEngine.drawRound(matrixStack, x + width - 22, y + 5, 14, 7, 1, getColorSetting().getColorObject());
-
-        if (!extended)
-            return;
-
-        boolean rainbowHovered = Render2DEngine.isHovered(mouseX, mouseY, x + 36f, y + 54f, 24, 7);
-        boolean copyHovered = Render2DEngine.isHovered(mouseX, mouseY, x + 9f, y + 54f, 24, 7);
-        boolean pasteHovered = Render2DEngine.isHovered(mouseX, mouseY, x + 63f, y + 54f, 24, 7);
-        boolean dark = Render2DEngine.isDark(ThunderHack.copy_color);
-        boolean dark2 = Render2DEngine.isDark(getColorSetting().getColorObject());
-
-        Render2DEngine.drawRect(matrixStack, x + 9f, y + 54f, 24, 7, new Color(0x424242));
-        FontRenderers.sf_medium_mini.drawString(matrixStack, "Сopy", x + 13, y + 56.5f, copyHovered ? new Color(0xA3FFFFFF, true).getRGB() : Color.WHITE.getRGB());
-
-        Render2DEngine.drawRect(matrixStack, x + 36f, y + 54f, 24, 7, getColorSetting().isRainbow() ? getColorSetting().getColorObject() : new Color(0x424242));
-        FontRenderers.sf_medium_mini.drawString(matrixStack, "RB", x + 44f, y + 56.5f, rainbowHovered ? new Color(0xA3FFFFFF, true).getRGB() : (dark2 ? Color.WHITE.getRGB() : Color.BLACK.getRGB()));
-
-        Render2DEngine.drawRect(matrixStack, x + 63f, y + 54f, 24, 7, ThunderHack.copy_color);
-        FontRenderers.sf_medium_mini.drawString(matrixStack, "Paste", x + 67f, y + 56.5f, pasteHovered ? new Color(0xA3FFFFFF, true).getRGB() : dark ? Color.WHITE.getRGB() : Color.BLACK.getRGB());
-
-        renderPicker(matrixStack, mouseX, mouseY, getColorSetting().getColorObject());
+    private void syncFromSetting() {
+        Color c = getColorSetting().getColorObject();
+        float[] hsb = Color.RGBtoHSB(c.getRed(), c.getGreen(), c.getBlue(), null);
+        // keep the hue when the colour is grey/black - otherwise dragging to black resets the hue slider
+        if (hsb[1] > 0.01f && hsb[2] > 0.01f) hue = hsb[0];
+        saturation = hsb[1];
+        brightness = hsb[2];
+        alpha = getColorSetting().getAlpha();
+        lastSynced = c.getRGB();
     }
 
     @Override
     public float getHeight() {
-        return extended ? 66 : 15;
+        return HEAD + (FULL - HEAD) * open;
     }
 
-    private void renderPicker(DrawContext matrixStack, int mouseX, int mouseY, Color color) {
-        double cx = x + 6;
-        double cy = y + 16;
-        double cw = width - 38;
-        double ch = height - 30;
+    /* ---------------------------------------------------------------- geometry */
 
-        if (prevColor != getColorSetting().getColorObject()) {
-            updatePos();
-            prevColor = getColorSetting().getColorObject();
+    private float fieldX() { return x + PAD; }
+    private float fieldY() { return y + HEAD + 4f; }
+    private float fieldW() { return width - PAD * 2f - 26f; }
+    private float hueX() { return fieldX() + fieldW() + 6f; }
+    private float alphaX() { return hueX() + 10f; }
+    private float swatchY() { return fieldY() + FIELD_H + 6f; }
+    private float btnY() { return swatchY() + SWATCH_ROW + 4f; }
+
+    private float btnW() { return (width - PAD * 2f - 3f * 4f) / 4f; }
+
+    /* ---------------------------------------------------------------- render */
+
+    @Override
+    public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+        Color cur = getColorSetting().getColorObject();
+        if (cur.getRGB() != lastSynced && !sbFocused && !hueFocused && !alphaFocused) syncFromSetting();
+
+        open = AnimationUtility.fast(open, extended ? 1f : 0f, 14f);
+        boolean headHov = Render2DEngine.isHovered(mouseX, mouseY, x, y, width, HEAD);
+        headerHover = AnimationUtility.fast(headerHover, headHov ? 1f : 0f, 16f);
+
+        // header: name + preview pill (glows in its own colour, grows a little on hover)
+        FontRenderers.sf_medium_mini.drawString(ctx, setting.getName(), x + 6, y + 6, new Color(-1).getRGB());
+        float pw = 18f + 2f * headerHover, ph = 8f + headerHover;
+        float pX = x + width - 8f - pw, pY = y + (HEAD - ph) / 2f;
+        Render2DEngine.drawBlurredShadow(ctx, pX, pY, pw, ph, 8, Render2DEngine.injectAlpha(cur, 160));
+        checker(ctx, pX, pY, pw, ph);
+        Render2DEngine.drawRound(ctx, pX, pY, pw, ph, ph / 2f, cur);
+        // a chevron that turns as it opens
+        float chx = pX - 8f, chy = y + HEAD / 2f;
+        Color chev = new Color(255, 255, 255, (int) (110 + 100 * headerHover));
+        float rot = open; // 0 = pointing right, 1 = down
+        for (int k = -2; k <= 2; k++) {
+            float t = Math.abs(k) / 2f;
+            float dx = rot < 0.5f ? (1f - t) * 1.6f : k * 0.9f;
+            float dy = rot < 0.5f ? k * 0.9f : (1f - t) * 1.6f - 0.8f;
+            Render2DEngine.drawRound(ctx, chx + dx - 0.6f, chy + dy - 0.6f, 1.2f, 1.2f, 0.6f, chev);
         }
 
-        if (firstInit) {
-            spos = (float) ((cx + cw) - (cw - (cw * saturation)));
-            bpos = (float) ((cy + (ch - (ch * brightness))));
-            hpos = (float) ((cy + (ch - 3 + ((ch - 3) * hue))));
-            apos = (float) ((cy + (ch - 3 - ((ch - 3) * (alpha / 255f)))));
-            firstInit = false;
-        }
-
-        spos = Render2DEngine.scrollAnimate(spos, (float) ((cx + cw) - (cw - (cw * saturation))), .6f);
-        bpos = Render2DEngine.scrollAnimate(bpos, (float) (cy + (ch - (ch * brightness))), .6f);
-        hpos = Render2DEngine.scrollAnimate(hpos, (float) (cy + (ch - 3 + ((ch - 3) * hue))), .6f);
-        apos = Render2DEngine.scrollAnimate(apos, (float) (cy + (ch - 3 - ((ch - 3) * (alpha / 255f)))), .6f);
-
-        Color colorA = Color.getHSBColor(hue, 0.0F, 1.0F), colorB = Color.getHSBColor(hue, 1.0F, 1.0F);
-        Color colorC = new Color(0, 0, 0, 0), colorD = new Color(0, 0, 0);
-
-        Render2DEngine.horizontalGradient(matrixStack, (float) cx + 2, (float) cy, (float) (cx + cw), (float) (cy + ch), colorA, colorB);
-        Render2DEngine.verticalGradient(matrixStack, (float) (cx + 2), (float) cy, (float) (cx + cw), (float) (cy + ch), colorC, colorD);
-
-        for (float i = 1f; i < ch - 2f; i += 1f) {
-            float curHue = (float) (1f / (ch / i));
-            Render2DEngine.drawRect(matrixStack, (float) (cx + cw + 4), (float) (cy + i), 8, 1, Color.getHSBColor(curHue, 1f, 1f));
-        }
-
-        Render2DEngine.drawRect(matrixStack, (float) (cx + cw + 17), (float) (cy + 1f), 8f, (float) (ch - 3), new Color(0xFFFFFFFF));
-
-        Render2DEngine.verticalGradient(matrixStack, (float) (cx + cw + 17), (float) (cy + 0.8f), (float) (cx + cw + 25), (float) (cy + ch - 2), new Color(color.getRed(), color.getGreen(), color.getBlue(), 255), new Color(0, 0, 0, 0));
-
-        Render2DEngine.drawRect(matrixStack, (float) (cx + cw + 3), hpos + 0.5f, 10, 1, Color.WHITE);
-        Render2DEngine.drawRect(matrixStack, (float) (cx + cw + 16), apos + 0.5f, 10, 1, Color.WHITE);
-        Render2DEngine.drawRound(matrixStack, spos - 1.5f, bpos - 1.5f, 3, 3, 1.5f, new Color(-1));
-
-        Color value = Color.getHSBColor(hue, saturation, brightness);
-
-        if (sbfocused) {
-            saturation = (float) ((MathUtility.clamp((float) (mouseX - cx), 0f, (float) cw)) / cw);
-            brightness = (float) ((ch - MathUtility.clamp((float) (mouseY - cy), 0, (float) ch)) / ch);
-            value = Color.getHSBColor(hue, saturation, brightness);
-            setColor(new Color(value.getRed(), value.getGreen(), value.getBlue(), alpha));
-        }
-
-        if (hfocused) {
-            hue = (float) -((ch - MathUtility.clamp((float) (mouseY - cy), 0, (float) ch)) / ch);
-            value = Color.getHSBColor(hue, saturation, brightness);
-            setColor(new Color(value.getRed(), value.getGreen(), value.getBlue(), alpha));
-        }
-
-        if (afocused) {
-            alpha = (int) (((ch - MathUtility.clamp((float) (mouseY - cy), 0, (float) ch)) / ch) * 255);
-            setColor(new Color(value.getRed(), value.getGreen(), value.getBlue(), alpha));
+        if (open < 0.03f) return;
+        Render2DEngine.addWindow(ctx, x, y + HEAD, x + width, y + getHeight(), 1.0);
+        try {
+            renderPicker(ctx, mouseX, mouseY);
+        } finally {
+            Render2DEngine.popWindow();
         }
     }
 
-    private void updatePos() {
-        float[] hsb = Color.RGBtoHSB(getColorSetting().getColorObject().getRed(), getColorSetting().getColorObject().getGreen(), getColorSetting().getColorObject().getBlue(), null);
-        hue = -1 + hsb[0];
-        saturation = hsb[1];
-        brightness = hsb[2];
-        alpha = getColorSetting().getAlpha();
+    private void renderPicker(DrawContext ctx, int mouseX, int mouseY) {
+        float fx = fieldX(), fy = fieldY(), fw = fieldW(), fh = FIELD_H;
+
+        // dragging
+        if (sbFocused) {
+            saturation = Math.clamp((mouseX - fx) / fw, 0f, 1f);
+            brightness = 1f - Math.clamp((mouseY - fy) / fh, 0f, 1f);
+            apply();
+        }
+        if (hueFocused) {
+            hue = Math.clamp((mouseY - fy) / fh, 0f, 0.999f);
+            apply();
+        }
+        if (alphaFocused) {
+            alpha = Math.round(255 * (1f - Math.clamp((mouseY - fy) / fh, 0f, 1f)));
+            apply();
+        }
+
+        // saturation / brightness field: white -> hue across, transparent -> black down; framed and rounded
+        Render2DEngine.drawRound(ctx, fx - 1f, fy - 1f, fw + 2f, fh + 2f, 4f, new Color(255, 255, 255, 30));
+        Render2DEngine.horizontalGradient(ctx, fx, fy, fx + fw, fy + fh, Color.WHITE, Color.getHSBColor(hue, 1f, 1f));
+        Render2DEngine.verticalGradient(ctx, fx, fy, fx + fw, fy + fh, new Color(0, 0, 0, 0), Color.BLACK);
+        float kx = fx + fw * saturation, ky = fy + fh * (1f - brightness);
+        Color solid = Color.getHSBColor(hue, saturation, brightness);
+        Render2DEngine.drawRound(ctx, kx - 4f, ky - 4f, 8f, 8f, 4f, new Color(0, 0, 0, 90));
+        Render2DEngine.drawRound(ctx, kx - 3.5f, ky - 3.5f, 7f, 7f, 3.5f, Color.WHITE);
+        Render2DEngine.drawRound(ctx, kx - 2.2f, ky - 2.2f, 4.4f, 4.4f, 2.2f, solid);
+
+        // hue slider (vertical rainbow pill)
+        float hx = hueX();
+        for (float i = 0; i < fh; i += 1f)
+            Render2DEngine.drawRect(ctx, hx, fy + i, 6f, 1.05f, Color.getHSBColor(i / fh, 1f, 1f));
+        knob(ctx, hx - 1.5f, fy + fh * hue, 9f, Color.getHSBColor(hue, 1f, 1f));
+
+        // opacity slider over a checkerboard
+        float ax = alphaX();
+        checker(ctx, ax, fy, 6f, fh);
+        Render2DEngine.verticalGradient(ctx, ax, fy, ax + 6f, fy + fh,
+                new Color(solid.getRed(), solid.getGreen(), solid.getBlue(), 255), new Color(solid.getRed(), solid.getGreen(), solid.getBlue(), 0));
+        knob(ctx, ax - 1.5f, fy + fh * (1f - alpha / 255f), 9f, new Color(solid.getRed(), solid.getGreen(), solid.getBlue(), Math.max(60, alpha)));
+
+        // quick colours + hex code
+        float sy = swatchY();
+        float sx = fx;
+        int active = getColorSetting().getColorObject().getRGB() | 0xFF000000;
+        for (int i = 0; i < ColorPalette.SWATCHES.size(); i++) {
+            Color c = ColorPalette.SWATCHES.get(i);
+            if (sx + 9f > x + width - 44f) break;
+            boolean hov = Render2DEngine.isHovered(mouseX, mouseY, sx, sy + 1f, 9f, 9f);
+            float g = hov ? 1f : 0f;
+            if ((c.getRGB() | 0xFF000000) == active)
+                Render2DEngine.drawRound(ctx, sx - 1.5f, sy - 0.5f, 12f, 12f, 6f, Color.WHITE);
+            Render2DEngine.drawRound(ctx, sx - g * 0.8f, sy + 1f - g * 0.8f, 9f + g * 1.6f, 9f + g * 1.6f, (9f + g * 1.6f) / 2f, c);
+            sx += 11.5f;
+        }
+        String hex = String.format("#%06X", getColorSetting().getColorObject().getRGB() & 0xFFFFFF);
+        float hw = FontRenderers.sf_medium_mini.getStringWidth(hex) + 8f;
+        Render2DEngine.drawRound(ctx, x + width - PAD - hw, sy, hw, 11f, 3.5f, new Color(255, 255, 255, 14));
+        FontRenderers.sf_medium_mini.drawString(ctx, hex, x + width - PAD - hw + 4f, sy + 3.5f, new Color(0xC8C8D2).getRGB());
+
+        // pill buttons
+        float by = btnY(), bw = btnW();
+        Color acc = HudEditor.getColor(0);
+        for (int i = 0; i < 4; i++) {
+            float bx = fx + i * (bw + 4f);
+            boolean hov = Render2DEngine.isHovered(mouseX, mouseY, bx, by, bw, BTN_ROW);
+            btnHover[i] = AnimationUtility.fast(btnHover[i], hov ? 1f : 0f, 16f);
+            boolean on = i == 2 && getColorSetting().isRainbow();
+            Color bg = on ? Render2DEngine.injectAlpha(acc, 150)
+                    : Render2DEngine.interpolateColorC(new Color(255, 255, 255, 16), new Color(255, 255, 255, 34), btnHover[i]);
+            Render2DEngine.drawRound(ctx, bx, by, bw, BTN_ROW, BTN_ROW / 2f, bg);
+            if (i == 1) // Paste shows what it will paste
+                Render2DEngine.drawRound(ctx, bx + 3f, by + 3.5f, 6f, 6f, 3f, ThunderHack.copy_color);
+            if (i == 3) // Reset shows the default it goes back to
+                Render2DEngine.drawRound(ctx, bx + 3f, by + 3.5f, 6f, 6f, 3f, new Color(getColorSetting().getDefaultColor(), true));
+            String label = BTN[i];
+            float lw = FontRenderers.sf_medium_mini.getStringWidth(label);
+            float lx = bx + (bw - lw) / 2f + (i == 1 || i == 3 ? 3f : 0f);
+            Color tc = Render2DEngine.interpolateColorC(new Color(0xB4B4C0), Color.WHITE, Math.max(btnHover[i], on ? 1f : 0f));
+            FontRenderers.sf_medium_mini.drawString(ctx, label, lx, by + 4.5f, tc.getRGB());
+        }
     }
 
-    private void setColor(Color color) {
-        getColorSetting().setColor(color.getRGB());
-        prevColor = color;
+    /** A round slider knob: white with a dark edge, filled with the value's colour. */
+    private static void knob(DrawContext ctx, float kx, float ky, float w, Color fill) {
+        Render2DEngine.drawRound(ctx, kx - 0.5f, ky - 3f, w + 1f, 6f, 3f, new Color(0, 0, 0, 100));
+        Render2DEngine.drawRound(ctx, kx, ky - 2.5f, w, 5f, 2.5f, Color.WHITE);
+        Render2DEngine.drawRound(ctx, kx + 1.5f, ky - 1.2f, w - 3f, 2.4f, 1.2f, fill);
     }
+
+    /** Grey checkerboard under anything with transparency. */
+    private static void checker(DrawContext ctx, float cx, float cy, float w, float h) {
+        float s = 3f;
+        for (float yy = 0; yy < h; yy += s)
+            for (float xx = 0; xx < w; xx += s) {
+                boolean dark = ((int) (xx / s) + (int) (yy / s)) % 2 == 0;
+                Render2DEngine.drawRect(ctx, cx + xx, cy + yy, Math.min(s, w - xx), Math.min(s, h - yy),
+                        dark ? new Color(70, 70, 78) : new Color(110, 110, 118));
+            }
+    }
+
+    private void apply() {
+        Color c = Color.getHSBColor(hue, saturation, brightness);
+        int argb = new Color(c.getRed(), c.getGreen(), c.getBlue(), alpha).getRGB();
+        getColorSetting().setColor(argb);
+        lastSynced = getColorSetting().getColorObject().getRGB();
+    }
+
+    /* ---------------------------------------------------------------- input */
 
     @Override
     public void mouseClicked(int mouseX, int mouseY, int button) {
-        double cx = x + 4;
-        double cy = y + 17;
-        double cw = width - 34;
-        double ch = height - 30;
-
-        boolean rainbowHovered = Render2DEngine.isHovered(mouseX, mouseY, x + 36f, y + 54f, 24, 7);
-        boolean copyHovered = Render2DEngine.isHovered(mouseX, mouseY, x + 9f, y + 54f, 24, 7);
-        boolean pasteHovered = Render2DEngine.isHovered(mouseX, mouseY, x + 63f, y + 54f, 24, 7);
-        boolean colorHovered = Render2DEngine.isHovered(mouseX, mouseY, x, y, width, 11);
-
-        if (colorHovered)
+        if (Render2DEngine.isHovered(mouseX, mouseY, x, y, width, HEAD)) {
             extended = !extended;
-
-        if (!extended)
             return;
+        }
+        if (!extended || open < 0.9f || button != 0) return;
 
-        if (Render2DEngine.isHovered(mouseX, mouseY, cx + cw + 17, cy, 8, ch) && button == 0) afocused = true;
+        float fx = fieldX(), fy = fieldY(), fw = fieldW();
+        if (Render2DEngine.isHovered(mouseX, mouseY, fx - 2f, fy - 2f, fw + 4f, FIELD_H + 4f)) {
+            sbFocused = true;
+            return;
+        }
+        if (Render2DEngine.isHovered(mouseX, mouseY, hueX() - 2f, fy - 2f, 10f, FIELD_H + 4f)) {
+            hueFocused = true;
+            return;
+        }
+        if (Render2DEngine.isHovered(mouseX, mouseY, alphaX() - 2f, fy - 2f, 10f, FIELD_H + 4f)) {
+            alphaFocused = true;
+            return;
+        }
 
-        else if (Render2DEngine.isHovered(mouseX, mouseY, cx + cw + 4, cy, 8, ch) && button == 0) hfocused = true;
+        // quick colours keep this setting's opacity
+        float sx = fx, sy = swatchY();
+        for (int i = 0; i < ColorPalette.SWATCHES.size(); i++) {
+            if (sx + 9f > x + width - 44f) break;
+            if (Render2DEngine.isHovered(mouseX, mouseY, sx, sy + 1f, 9f, 9f)) {
+                Color c = ColorPalette.SWATCHES.get(i);
+                getColorSetting().setRainbow(false);
+                getColorSetting().setColor(new Color(c.getRed(), c.getGreen(), c.getBlue(), getColorSetting().getAlpha()).getRGB());
+                syncFromSetting();
+                return;
+            }
+            sx += 11.5f;
+        }
 
-        else if (Render2DEngine.isHovered(mouseX, mouseY, cx, cy, cw, ch) && button == 0) sbfocused = true;
-
-        else if (rainbowHovered && button == 0) getColorSetting().setRainbow(!getColorSetting().isRainbow());
-
-        else if (copyHovered) ThunderHack.copy_color = getColorSetting().getColorObject();
-
-        else if (pasteHovered) getColorSetting().setColor(ThunderHack.copy_color.getRGB());
-
-        return;
+        float by = btnY(), bw = btnW();
+        for (int i = 0; i < 4; i++) {
+            float bx = fx + i * (bw + 4f);
+            if (!Render2DEngine.isHovered(mouseX, mouseY, bx, by, bw, BTN_ROW)) continue;
+            switch (i) {
+                case 0 -> ThunderHack.copy_color = getColorSetting().getColorObject();
+                case 1 -> getColorSetting().setColor(ThunderHack.copy_color.getRGB());
+                case 2 -> getColorSetting().setRainbow(!getColorSetting().isRainbow());
+                case 3 -> {
+                    getColorSetting().setRainbow(false);
+                    getColorSetting().setDefault();
+                }
+            }
+            syncFromSetting();
+            return;
+        }
     }
 
     @Override
     public void mouseReleased(int mouseX, int mouseY, int button) {
-        hfocused = false;
-        afocused = false;
-        sbfocused = false;
+        sbFocused = hueFocused = alphaFocused = false;
     }
 
     @Override
     public void onClose() {
-        hfocused = false;
-        afocused = false;
-        sbfocused = false;
+        sbFocused = hueFocused = alphaFocused = false;
     }
 }

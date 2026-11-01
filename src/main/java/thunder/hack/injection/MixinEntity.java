@@ -31,6 +31,13 @@ import static thunder.hack.features.modules.Module.mc;
 
 @Mixin(Entity.class)
 public abstract class MixinEntity implements IEntity {
+    /** KillEffect cinematic: the mouse does not turn you while the scene plays (the camera is on rails). */
+    @org.spongepowered.asm.mixin.injection.Inject(method = "changeLookDirection", at = @org.spongepowered.asm.mixin.injection.At("HEAD"), cancellable = true)
+    private void freezeLookInCinematic(double dx, double dy, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if ((Object) this == net.minecraft.client.MinecraftClient.getInstance().player
+                && thunder.hack.features.modules.render.KillEffect.cinematicActive()) ci.cancel();
+    }
+
 
     @Shadow
     protected abstract BlockPos getVelocityAffectingPos();

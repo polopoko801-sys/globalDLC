@@ -338,6 +338,29 @@ public class Render2DEngine {
         renderRoundedQuad(context, color, x, y, width + x, height + y, radius, 4);
     }
 
+    /**
+     * The client's liquid glass, clean: the backdrop blurred and lifted, a veil in the GUI colour, a faint milky
+     * wash and a light-catching rim - smooth rounded edges and none of the boxy parts (no rectangular sheen, no
+     * square shadow). Falls back to a dark translucent pane where there is no backdrop to blur.
+     *
+     * @param alpha whole-pane opacity, 0..1
+     */
+    public static void drawLiquidGlass(DrawContext context, float x, float y, float w, float h, float radius, float alpha) {
+        if (alpha <= 0.01f || w <= 0f || h <= 0f) return;
+        float blur = HudEditor.blurStrength.getValue();
+        Color gui = HudEditor.getColor(0);
+        if (drawBackdropBlur(context, x, y, w, h, radius, blur / 2.5f, 1f, alpha)) {
+            drawBackdropBoost(context, x, y, w, h, radius, 0.07f * alpha);
+            int tintA = Math.round(255 * MathHelper.clamp(HudEditor.glassTint.getValue(), 0f, 0.8f) * alpha);
+            drawRoundSmooth(context, x, y, w, h, radius, injectAlpha(interpolateColorC(gui, new Color(18, 18, 24), 0.55f), tintA));
+            drawRoundSmooth(context, x, y, w, h, radius, injectAlpha(gui, Math.round(22 * alpha)));
+            drawRoundSmooth(context, x, y, w, h, radius, new Color(255, 255, 255, Math.round(14 * alpha)));
+        } else {
+            drawRoundSmooth(context, x, y, w, h, radius, new Color(20, 20, 26, Math.round(200 * alpha)));
+        }
+        drawGlassRim(context, x, y, w, h, radius, Math.min(1.2f, Math.min(w, h) / 6f), alpha);
+    }
+
     /** One physical screen pixel in GUI units. */
     public static float pixel() {
         return 1f / (float) Math.max(1.0, mc.getWindow().getScaleFactor());
@@ -525,7 +548,8 @@ public class Render2DEngine {
 
         Matrix3x2f pose = GuiRender.pose(context);
         List<double[]> pts = new ArrayList<>();
-        buildRoundedPoints(pts, x, y, x + width, y + height, radius, 6);
+        // enough segments per corner for its size - six made big round panes visibly polygonal
+        buildRoundedPoints(pts, x, y, x + width, y + height, radius, Math.max(6, Math.min(36, radius * 1.6)));
         org.joml.Vector2f centre = pose.transformPosition(x + width / 2f, y + height / 2f, new org.joml.Vector2f());
 
         // Progressive alpha (1/1, 1/2, 1/3 … 1/N) over alpha blending: layer k pulls the result 1/k of the
@@ -551,7 +575,8 @@ public class Render2DEngine {
 
         Matrix3x2f pose = GuiRender.pose(context);
         List<double[]> pts = new ArrayList<>();
-        buildRoundedPoints(pts, x, y, x + width, y + height, radius, 6);
+        // enough segments per corner for its size - six made big round panes visibly polygonal
+        buildRoundedPoints(pts, x, y, x + width, y + height, radius, Math.max(6, Math.min(36, radius * 1.6)));
         int g = MathHelper.clamp(Math.round(255 * amount), 0, 255);
         backdropPass(context, GuiRender.GUI_TEXTURED_ADDITIVE, pose, pts, 0f, 0f, sw, sh,
                 new Color(g, g, g, 255).getRGB(), 1f, null);
