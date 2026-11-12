@@ -38,23 +38,20 @@ public class NotificationManager implements IManager {
 
         notifications.removeIf(Notification::shouldDelete);
 
-        // NotifyHud enabled -> the user placed the stack himself, so grow downwards from that anchor
+        // BKClient's toasts: centred at the bottom (90 px up), each one 30 px above the previous, growing upwards.
+        // With NotifyHud enabled the stack sits where the user dragged it instead.
+        float centreX = mc.getWindow().getScaledWidth() / 2f;
+        float baseY = mc.getWindow().getScaledHeight() - 90f;
         if (ModuleManager.notifyHud.isEnabled()) {
-            float y = ModuleManager.notifyHud.getPosY();
-            for (Notification n : Lists.newArrayList(notifications)) {
-                n.renderShaders(context, y);
-                n.render(context, y);
-                y += (float) n.getHeight() + 4f;
-            }
-            return;
+            centreX = ModuleManager.notifyHud.getPosX() + 80f;
+            baseY = ModuleManager.notifyHud.getPosY();
         }
-
-        float startY = isDefault() ? mc.getWindow().getScaledHeight() - 36f : mc.getWindow().getScaledHeight() / 2f + 25;
-
+        // drawn with no clip window open: a HUD element that forgot to close one would cut the toasts away
+        thunder.hack.utility.render.Render2DEngine.restoreClip(0);
+        float off = 0f;
         for (Notification n : Lists.newArrayList(notifications)) {
-            startY = (float) (startY - n.getHeight() - 3f);
-            n.renderShaders(context, startY + (isDefault() ? 0 : notifications.size() * 21));
-            n.render(context, startY + (isDefault() ? 0 : notifications.size() * 21));
+            n.draw(context, centreX, baseY, off);
+            if (n.holdsPlace()) off += 30f;
         }
     }
 

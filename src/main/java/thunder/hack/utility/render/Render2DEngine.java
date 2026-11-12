@@ -75,6 +75,15 @@ public class Render2DEngine {
         clipStack.push(rect);
     }
 
+    /** How many clip windows are open - the HUD loop restores it after each module, so one that forgets popWindow cannot clip everything drawn after it. */
+    public static int clipDepth() {
+        return clipStack.size();
+    }
+
+    public static void restoreClip(int depth) {
+        while (clipStack.size() > depth) clipStack.pop();
+    }
+
     public static void popWindow() {
         if (!clipStack.isEmpty()) clipStack.pop();
     }

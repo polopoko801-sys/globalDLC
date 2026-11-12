@@ -136,6 +136,7 @@ public class ModuleManager implements IManager {
     public static thunder.hack.features.modules.render.TargetESP targetESP = new thunder.hack.features.modules.render.TargetESP();
     public static thunder.hack.features.modules.render.GlassVapor glassVapor = new thunder.hack.features.modules.render.GlassVapor();
     public static thunder.hack.features.modules.misc.AnticheatDetect anticheatDetect = new thunder.hack.features.modules.misc.AnticheatDetect();
+    public static thunder.hack.features.modules.render.SmoothCamera smoothCamera = new thunder.hack.features.modules.render.SmoothCamera();
     public static HoleAnchor holeAnchor = new HoleAnchor();
     public static Fullbright fullbright = new Fullbright();
     public static FpsCounter fpsCounter = new FpsCounter();
@@ -171,6 +172,7 @@ public class ModuleManager implements IManager {
     public static SpeedMine speedMine = new SpeedMine();
     public static PotionHud potionHud = new PotionHud();
     public static DynamicIsland dynamicIsland = new DynamicIsland();
+    public static CustomChat customChat = new CustomChat();
     public static PearlBait pearlBait = new PearlBait();
     public static PacketFly packetFly = new PacketFly();
     public static MultiTask multitask = new MultiTask();
@@ -422,20 +424,24 @@ public class ModuleManager implements IManager {
         // potions. A separate layer puts the HUD strictly on top, whatever the module order.
         for (Module module : modules) {
             if (!module.isEnabled() || module instanceof HudElement) continue;
+            int clip = thunder.hack.utility.render.Render2DEngine.clipDepth();
             try {
                 module.onRender2D(context);
             } catch (Exception ex) {
                 reportOnce(module, "onRender2D", ex);
             }
+            restoreClip(module, clip);
         }
         context.createNewRootLayer();
         for (Module module : modules) {
             if (!module.isEnabled() || !(module instanceof HudElement)) continue;
+            int clip = thunder.hack.utility.render.Render2DEngine.clipDepth();
             try {
                 module.onRender2D(context);
             } catch (Exception ex) {
                 reportOnce(module, "onRender2D", ex);
             }
+            restoreClip(module, clip);
         }
         if (!HudElement.anyHovered && !ClickGUI.anyHovered)
             if (GLFW.glfwGetPlatform() != GLFW.GLFW_PLATFORM_WAYLAND) {
@@ -459,6 +465,14 @@ public class ModuleManager implements IManager {
                 reportOnce(module, "onRender3D", ex);
             }
         });
+    }
+
+    /** Closes clip windows a module left open (and names it once in the log), so later HUD is not cut away. */
+    private void restoreClip(Module module, int depth) {
+        if (thunder.hack.utility.render.Render2DEngine.clipDepth() <= depth) return;
+        thunder.hack.utility.render.Render2DEngine.restoreClip(depth);
+        if (reported.add(module.getName() + ":clip"))
+            ThunderHack.LOGGER.warn("[GlobalDLC] {} left a clip window open in onRender2D - closed it", module.getName());
     }
 
     private final java.util.Set<String> reported = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -494,13 +508,23 @@ public class ModuleManager implements IManager {
     /** Dev only (-Dgombal.devOpenGui=true): opens the ClickGUI once after joining, for screenshot checks. */
     private int devOpenGuiTicks = (System.getProperty("gombal.devOpenGui") != null || System.getProperty("gombal.devEnable") != null) ? 60 : -1;
 
+    /** Dev only (-Dgombal.devShot=<ticks>): saves screenshots/devshot.png that many ticks after the dev setup ran. */
+    private int devShotTicks = -1;
+
     public void watchWorld() {
+        if (devShotTicks > 0 && --devShotTicks == 0)
+            net.minecraft.client.util.ScreenshotRecorder.saveScreenshot(mc.runDirectory, "devshot.png", mc.getFramebuffer(), 1, t -> {
+            });
         if (devOpenGuiTicks > 0 && mc.world != null && mc.player != null && --devOpenGuiTicks == 0) {
+            String shot = System.getProperty("gombal.devShot");
+            if (shot != null) devShotTicks = Integer.parseInt(shot);
             String en = System.getProperty("gombal.devEnable");
             if (en != null)
                 for (String n : en.split(",")) {
                     Module m = get(n.trim());
-                    if (m != null && !m.isEnabled()) m.enable();
+                    if (m == null) continue;
+                    if (m.isEnabled()) m.disable(); // re-toggled, so its toast and sound play again
+                    m.enable();
                 }
             // -Dgombal.devCmd="tp+@s+0+80+0+45+40;time+set+noon" (+ = space): commands run once after joining (screenshot setups)
             String cmd = System.getProperty("gombal.devCmd");
@@ -512,6 +536,9 @@ public class ModuleManager implements IManager {
                 clickGui.enable();
                 Module dev = get(gui);
                 if (dev != null) thunder.hack.gui.clickui.ClickGUI.getInstance().devOpenSettings(dev);
+                // -Dgombal.devOpenGui=editgui: opens the ClickGUI on its Edit GUI tab, for screenshot checks of its preview
+                if ("editgui".equalsIgnoreCase(gui))
+                    thunder.hack.gui.clickui.ClickGUI.getInstance().devOpenEditGui();
             }
         }
 

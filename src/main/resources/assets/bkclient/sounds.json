@@ -1,4 +1,7 @@
 {
+  "typing": { "sounds": [ "bkclient:typing" ] },
+  "chat_send": { "sounds": [ "bkclient:chat/send" ] },
+  "chat/remove": { "sounds": [ "bkclient:chat/remove" ] },
   "melee.annihil.annihil_draw": {
     "sounds": [
       {

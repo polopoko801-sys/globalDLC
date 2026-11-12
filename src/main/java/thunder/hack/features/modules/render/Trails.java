@@ -45,7 +45,7 @@ public class Trails extends Module {
     private final Setting<Float> blobSpacing = new Setting<>("Blob Spacing", 0.55f, 0.2f, 2.0f, v -> trailsMode.is(TrailsMode.Blobs));
     private final Setting<Float> tint = new Setting<>("Tint", 0.45f, 0.0f, 1.0f, v -> trailsMode.is(TrailsMode.Water) || trailsMode.is(TrailsMode.Glass) || trailsMode.is(TrailsMode.Blobs));
 
-    public enum TrailsMode {Astolfo, Rainbow, Client, Custom, Water, Glass, Blobs, Images}
+    public enum TrailsMode {Astolfo, Rainbow, Client, Custom, Water, Glass, Blobs, Images, Aura}
 
     /** Images mode: built-in sprites (drawn in code) or your own picture from misc/images/trail.png. */
     public enum TrailImage {Stars, Hearts, Sparkles, Flames, Snowflakes, Bubbles, Petals, Notes, Custom}
@@ -64,7 +64,7 @@ public class Trails extends Module {
     private long customTriedAt;
 
     private boolean usesOwnColors() {
-        return trailsMode.is(TrailsMode.Custom) || trailsMode.is(TrailsMode.Water) || trailsMode.is(TrailsMode.Glass)
+        return trailsMode.is(TrailsMode.Custom) || trailsMode.is(TrailsMode.Water) || trailsMode.is(TrailsMode.Glass) || trailsMode.is(TrailsMode.Aura)
                 || trailsMode.is(TrailsMode.Blobs) || trailsMode.is(TrailsMode.Images);
     }
 
@@ -84,7 +84,7 @@ public class Trails extends Module {
                 Color c = HudEditor.getColor(0);
                 color = new Vec3d((float) c.getRed() / 255.0f, (float) c.getGreen() / 255.0f, (float) c.getBlue() / 255.0f);
             }
-            case Custom, Water, Glass, Blobs, Images -> color = new Vec3d(red, green, blue);
+            case Custom, Water, Glass, Blobs, Images, Aura -> color = new Vec3d(red, green, blue);
             case Astolfo -> color = new Vec3d((float) Render2DEngine.astolfo(false, 1).getRed() / 255.0f,
                     (float) Render2DEngine.astolfo(false, 1).getGreen() / 255.0f, (float) Render2DEngine.astolfo(false, 1).getBlue() / 255.0f);
             case Rainbow -> color = new Vec3d((float) Render2DEngine.rainbow(300, 1.0f, 1.0f).getRed() / 255.0f,
@@ -145,6 +145,10 @@ public class Trails extends Module {
         }
 
         Matrix3x2f pose = GuiRender.pose(context);
+        if (trailsMode.is(TrailsMode.Aura)) {
+            drawAura(context, pose);
+            return;
+        }
         if (trailsMode.is(TrailsMode.Images)) {
             drawImages(context, pose);
             return;
@@ -195,6 +199,94 @@ public class Trails extends Module {
         for (int i = 0; i < op.length; i++) op[i] = alphas.get(i);
         int rgb = trails.isEmpty() ? 0xFFFFFF : bottom[n - 1] & 0xFFFFFF;
         FxSurface.draw(context, s == Style.Water ? FxSurface.Kind.Water : FxSurface.Kind.Glass, verts, op, rgb, tint.getValue(), false);
+    }
+
+    private final Setting<Float> auraHeight = new Setting<>("Aura Height", 0.7f, 0.2f, 1.6f, v -> trailsMode.is(TrailsMode.Aura));
+    private final Setting<Float> auraGlow = new Setting<>("Aura Glow", 0.6f, 0f, 1f, v -> trailsMode.is(TrailsMode.Aura));
+
+    /**
+     * Aura: a soft glowing ribbon low behind you, from the feet - brightest along its middle, melting away at its
+     * edges, with a wide additive halo around it. The far end narrows and fades, the end by your feet is full.
+     * Bottom Color is the ribbon, Top Color the bright core.
+     */
+    private void drawAura(DrawContext context, Matrix3x2f pose) {
+        int n = trails.size();
+        if (n < 2) return;
+        final int bands = 8;
+        Color base = new Color(bottomColor.getValue().getColor() & 0xFFFFFF);
+        Color core = new Color(topColor.getValue().getColor() & 0xFFFFFF);
+        Color light = new Color(Math.min(255, (core.getRed() + 255) / 2), Math.min(255, (core.getGreen() + 255) / 2),
+                Math.min(255, (core.getBlue() + 255) / 2));
+
+        // per point: life (1 new .. 0 old), and the projected position of each band edge
+        float[] life = new float[n];
+        float[][] px = new float[n][bands + 1], py = new float[n][bands + 1], hx = new float[n][bands + 1], hy = new float[n][bands + 1];
+        boolean[] ok = new boolean[n];
+        float lift = 0.08f;
+        for (int i = 0; i < n; i++) {
+            Trail t = trails.get(i);
+            life[i] = Math.clamp(1f - (float) t.existed / sizeToRemove.getValue(), 0f, 1f);
+            // narrower towards the old end
+            float h = auraHeight.getValue() * (0.35f + 0.65f * life[i]);
+            float mid = lift + auraHeight.getValue() * 0.5f;
+            ok[i] = true;
+            for (int k = 0; k <= bands; k++) {
+                float v = (float) k / bands;
+                Vec3d a = Render3DEngine.worldSpaceToScreenSpace(t.position.add(0, mid + (v - 0.5f) * h, 0));
+                Vec3d g = Render3DEngine.worldSpaceToScreenSpace(t.position.add(0, mid + (v - 0.5f) * h * 2.2f, 0));
+                if (!(a.z > 0 && a.z < 1) || !(g.z > 0 && g.z < 1)) {
+                    ok[i] = false;
+                    break;
+                }
+                px[i][k] = (float) a.x;
+                py[i][k] = (float) a.y;
+                hx[i][k] = (float) g.x;
+                hy[i][k] = (float) g.y;
+            }
+        }
+
+        float alphaAll = trailsAlpha.getValue();
+        // the halo: wide, faint, added on top of the world so it glows
+        if (auraGlow.getValue() > 0.01f)
+            GuiRender.quadsAdditive(context, Render2DEngine.currentClip(), vc -> {
+                for (int i = 0; i + 1 < n; i++) {
+                    if (!ok[i] || !ok[i + 1]) continue;
+                    for (int k = 0; k < bands; k++) {
+                        int c0 = auraColor(base, base, k, bands, life[i], alphaAll * 0.35f * auraGlow.getValue());
+                        int c1 = auraColor(base, base, k + 1, bands, life[i], alphaAll * 0.35f * auraGlow.getValue());
+                        int d0 = auraColor(base, base, k, bands, life[i + 1], alphaAll * 0.35f * auraGlow.getValue());
+                        int d1 = auraColor(base, base, k + 1, bands, life[i + 1], alphaAll * 0.35f * auraGlow.getValue());
+                        frontQuad(vc, pose, hx[i][k], hy[i][k], hx[i][k + 1], hy[i][k + 1], hx[i + 1][k + 1], hy[i + 1][k + 1],
+                                hx[i + 1][k], hy[i + 1][k], c0, c1, d1, d0);
+                    }
+                }
+            });
+        // the ribbon itself: soft edges, a light core
+        GuiRender.quads(context, Render2DEngine.currentClip(), vc -> {
+            for (int i = 0; i + 1 < n; i++) {
+                if (!ok[i] || !ok[i + 1]) continue;
+                for (int k = 0; k < bands; k++) {
+                    int c0 = auraColor(base, light, k, bands, life[i], alphaAll);
+                    int c1 = auraColor(base, light, k + 1, bands, life[i], alphaAll);
+                    int d0 = auraColor(base, light, k, bands, life[i + 1], alphaAll);
+                    int d1 = auraColor(base, light, k + 1, bands, life[i + 1], alphaAll);
+                    frontQuad(vc, pose, px[i][k], py[i][k], px[i][k + 1], py[i][k + 1], px[i + 1][k + 1], py[i + 1][k + 1],
+                            px[i + 1][k], py[i + 1][k], c0, c1, d1, d0);
+                }
+            }
+        });
+    }
+
+    /** Colour across the ribbon: transparent at both edges, the core colour in the middle, faded by age. */
+    private static int auraColor(Color edge, Color core, int k, int bands, float life, float alpha) {
+        float v = (float) k / bands;
+        float across = (float) Math.pow(Math.sin(Math.PI * v), 1.6);           // 0 at the edges, 1 in the middle
+        float c = (float) Math.pow(Math.sin(Math.PI * v), 4.0);                // the bright core is narrower
+        float r = (edge.getRed() + (core.getRed() - edge.getRed()) * c) / 255f;
+        float g = (edge.getGreen() + (core.getGreen() - edge.getGreen()) * c) / 255f;
+        float b = (edge.getBlue() + (core.getBlue() - edge.getBlue()) * c) / 255f;
+        float a = alpha * across * life * life * 0.85f;
+        return argb(r, g, b, a);
     }
 
     /**

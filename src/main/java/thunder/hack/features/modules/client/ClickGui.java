@@ -42,6 +42,13 @@ public class ClickGui extends Module {
     public final Setting<Integer> glassDarkness = new Setting<>("GlassDarkness", 178, 0, 240, v -> glass.getValue());
     public final Setting<Boolean> threeColumns = new Setting<>("3Columns", true);
 
+    /** Edit GUI: Liquid Glass (the frosted window) or Matt (BKClient's solid dark GUI). */
+    public enum GuiStyle {LiquidGlass, Matt}
+
+    public final Setting<GuiStyle> guiStyle = new Setting<>("GuiStyle", GuiStyle.LiquidGlass);
+    /** Edit GUI: the whole window's size. */
+    public final Setting<Float> guiSize = new Setting<>("GuiSize", 1f, 0.75f, 1.3f);
+
     public ClickGui() {
         super("ClickGui", Module.Category.CLIENT);
     }

@@ -63,6 +63,8 @@ public class DynamicIsland extends HudElement {
     private final Setting<Boolean> connectionVisible = new Setting<>("Connection", true);
     private final Setting<Boolean> swapSides = new Setting<>("SwapSides", false);
     private final Setting<Boolean> musicLyrics = new Setting<>("MusicLyrics", true);
+    /** The word being sung lights up in the GUI colour and hands the light on smoothly to the next one. */
+    private final Setting<Boolean> karaoke = new Setting<>("KaraokeWords", true, v -> musicLyrics.getValue());
     private final Setting<Boolean> liquidBubble = new Setting<>("LiquidBubble", true);
     private final Setting<Boolean> showAlerts = new Setting<>("Alerts", true);
     private final Setting<Boolean> showConfig = new Setting<>("Config", true);
@@ -585,10 +587,13 @@ public class DynamicIsland extends HudElement {
                     float scroll = hasActiveLyric ? Math.min(Math.max(0f, textWidth - lyricWidth), Math.max(0f, lineAge - 0.8f) * 24f) : 0f;
                     float wordX = lyricX - scroll;
                     String[] words = compactText.split("\\s+");
+                    float[] lit = karaoke.getValue() && hasActiveLyric ? karaokeWeights(words, synced, lyricIndex, positionMs) : null;
+                    Color litColor = thunder.hack.gui.clickui.ClickGUI.accentColor();
                     for (int i = 0; i < words.length; i++) {
                         float progress = Math.max(0f, Math.min(1f, (elapsed - Math.min(i, 10) * 0.025f) / 0.30f));
                         float eased = 1f - (float) Math.pow(1f - progress, 3);
-                        text(ctx, medium7, words[i], wordX, y + 4.5f + (1f - eased) * 6f, alpha(textColor, 255f * visibility * eased));
+                        Color c = lit == null ? textColor : mix(textColor, litColor, lit[i]);
+                        text(ctx, medium7, words[i], wordX, y + 4.5f + (1f - eased) * 6f, alpha(c, 255f * visibility * eased));
                         wordX += medium7.getStringWidth(words[i] + " ");
                     }
                 } finally {
@@ -1032,6 +1037,42 @@ public class DynamicIsland extends HudElement {
 
     private static Color accent() {
         return BkMusicUi.accent();
+    }
+
+    /**
+     * How lit each word of the sung line is right now, 0..1. The line's real length (to the next line) is shared
+     * out by syllables; a word lights up as it is reached and fades back as the next takes over, both over 160 ms,
+     * so the light glides along the line instead of jumping.
+     */
+    private static float[] karaokeWeights(String[] words, Lyrics.Track track, int index, long positionMs) {
+        var lines = track.lines();
+        long start = lines.get(index).atMs();
+        long end = index + 1 < lines.size() ? lines.get(index + 1).atMs() : start + 4000L;
+        // the last stretch of a line is usually a held note or a breath: words are spread over 90% of it
+        float span = Math.max(300f, (end - start) * 0.9f);
+        int total = 0;
+        int[] syl = new int[words.length];
+        for (int i = 0; i < words.length; i++) total += syl[i] = thunder.hack.features.modules.render.LyricsText.syllables(words[i]);
+        float[] out = new float[words.length];
+        float t = positionMs - start, at = 0f;
+        for (int i = 0; i < words.length; i++) {
+            float ws = span * at / Math.max(1, total);
+            at += syl[i];
+            float we = i == words.length - 1 ? Float.MAX_VALUE : span * at / Math.max(1, total);
+            out[i] = smooth(ws - 80f, ws + 80f, t) * (1f - smooth(we - 80f, we + 80f, t));
+        }
+        return out;
+    }
+
+    private static float smooth(float a, float b, float x) {
+        float k = Math.clamp((x - a) / (b - a), 0f, 1f);
+        return k * k * (3f - 2f * k);
+    }
+
+    private static Color mix(Color a, Color b, float t) {
+        t = Math.clamp(t, 0f, 1f);
+        return new Color(Math.round(a.getRed() + (b.getRed() - a.getRed()) * t), Math.round(a.getGreen() + (b.getGreen() - a.getGreen()) * t),
+                Math.round(a.getBlue() + (b.getBlue() - a.getBlue()) * t), a.getAlpha());
     }
 
     private static Color alpha(Color c, float a255) {

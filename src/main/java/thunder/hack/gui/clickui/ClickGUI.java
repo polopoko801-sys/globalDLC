@@ -61,7 +61,12 @@ public class ClickGUI extends Screen {
     private static final float CARD_H = 54f;
     private static final float ROW_H = 20f;
 
-    private static Color accent() {
+    /** The GUI colour chosen in Edit GUI, for other surfaces (the Dynamic Island karaoke). */
+    public static Color accentColor() {
+        return accent();
+    }
+
+    static Color accent() {
         Color c = ColorPalette.getActive();
         return c == null ? ACCENT_DEFAULT : c;
     }
@@ -202,13 +207,40 @@ public class ClickGUI extends Screen {
         return ModuleManager.clickGui == null || ModuleManager.clickGui.glass.getValue();
     }
 
+    /** Edit GUI's size, clamped so a hand-edited config cannot make the window unusable. */
+    static float guiSize() {
+        if (ModuleManager.clickGui == null) return 1f;
+        return Math.clamp(ModuleManager.clickGui.guiSize.getValue(), 0.75f, 1.3f);
+    }
+
+    /** Edit GUI's style: Matt is BKClient's solid GUI, without glass. */
+    static boolean matt() {
+        return ModuleManager.clickGui != null
+                && ModuleManager.clickGui.guiStyle.getValue() == thunder.hack.features.modules.client.ClickGui.GuiStyle.Matt;
+    }
+
+    /** BKClient's matt panel: the dark theme background (12, 12, 12) at 85%, rounded 7 with a soft squircle. */
+    static final Color MATT_PANEL = new Color(12, 12, 12, Math.round(255 * 0.85f));
+    static final Color MATT_OUTLINE = new Color(32, 32, 32);
+
     /**
      * Frosted panel: blurred backdrop + dark veil + top hairline. Falls back to a solid panel when glass is
      * off or the backend gave us no snapshot this frame.
      */
-    private static void glassPanel(DrawContext context, float x, float y, float w, float h, float r, boolean shadow) {
+    static void glassPanel(DrawContext context, float x, float y, float w, float h, float r, boolean shadow) {
+        glassPanel(context, x, y, w, h, r, shadow, matt());
+    }
+
+    /** @param matt draw this panel in the Matt style regardless of the setting (Edit GUI's hover preview) */
+    static void glassPanel(DrawContext context, float x, float y, float w, float h, float r, boolean shadow, boolean matt) {
         if (shadow)
             Render2DEngine.drawBlurredShadow(context, x, y, w, h, 16, new Color(0, 0, 0, 150));
+
+        if (matt) {
+            Render2DEngine.drawRoundSmooth(context, x - 0.5f, y - 0.5f, w + 1f, h + 1f, r + 0.5f, MATT_OUTLINE);
+            Render2DEngine.drawRoundSmooth(context, x, y, w, h, r, MATT_PANEL);
+            return;
+        }
 
         boolean blurred = glassOn() && Render2DEngine.drawBackdropBlur(context, x, y, w, h, r,
                 ModuleManager.clickGui.glassBlur.getValue());
@@ -238,8 +270,13 @@ public class ClickGUI extends Screen {
         // 1.21.11 already blurs+darkens the world behind any screen once per frame, so no applyBlur here.
         ScreenCapture.captureFrame();
 
-        float sw = mc.getWindow().getScaledWidth();
-        float sh = mc.getWindow().getScaledHeight();
+        // Edit GUI's size: the whole window is laid out in a space 1/size as large and drawn scaled up, so every
+        // hit test below works in that space too (see local())
+        float size = guiSize();
+        float sw = mc.getWindow().getScaledWidth() / size;
+        float sh = mc.getWindow().getScaledHeight() / size;
+        mouseX = (int) (mouseX / size);
+        mouseY = (int) (mouseY / size);
 
         openAnim = AnimationUtility.fast(openAnim, closing ? 0f : 1f, 11f);
         if (closing && openAnim < 0.03f) {
@@ -267,8 +304,8 @@ public class ClickGUI extends Screen {
         float scale = 0.9f + 0.1f * ease;
         var matrix = context.getMatrices();
         matrix.pushMatrix();
-        matrix.translate(sw / 2f, sh / 2f);
-        matrix.scale(scale, scale);
+        matrix.translate(sw * size / 2f, sh * size / 2f);
+        matrix.scale(scale * size, scale * size);
         matrix.translate(-sw / 2f, -sh / 2f);
 
         if (Render2DEngine.isHovered(mouseX, mouseY, px, py, panelW, panelH))
@@ -316,7 +353,7 @@ public class ClickGUI extends Screen {
         float activeY = -1f;
         for (Module.Category cat : cats) {
             sidebarRows.add(new Row(cat, null, cat.getName(), rowX, ry, rowW, ROW_H));
-            if (cat == selectedCategory && !cosmeticsOpen) activeY = ry;
+            if (cat == selectedCategory && !onPage()) activeY = ry;
             ry += ROW_H + 2f;
         }
         ry += 6f;
@@ -325,11 +362,14 @@ public class ClickGUI extends Screen {
         sidebarRows.add(new Row(null, "cosmetics", "Cosmetics", rowX, ry, rowW, ROW_H));
         if (cosmeticsOpen) activeY = ry;
         ry += ROW_H + 2f;
-        sidebarRows.add(new Row(null, "configs", "Configs", rowX, ry, rowW, ROW_H));
+        // one tab for both: it opens the config and friends windows side by side
+        sidebarRows.add(new Row(null, "configs", "Configs & Friends", rowX, ry, rowW, ROW_H));
         ry += ROW_H + 2f;
-        sidebarRows.add(new Row(null, "friends", "Friends", rowX, ry, rowW, ROW_H));
+        sidebarRows.add(new Row(null, "rynek", "Auto Rynek", rowX, ry, rowW, ROW_H));
+        if ("rynek".equals(page)) activeY = ry;
         ry += ROW_H + 2f;
-        sidebarRows.add(new Row(null, "hud", "Edit HUD", rowX, ry, rowW, ROW_H));
+        sidebarRows.add(new Row(null, "gui", "Edit GUI", rowX, ry, rowW, ROW_H));
+        if ("gui".equals(page)) activeY = ry;
 
         FontRenderers.sf_medium_mini.drawString(context, "FEATURES", rowX + 4f, labelFeaturesY, TEXT_MUTED.getRGB());
         FontRenderers.sf_medium_mini.drawString(context, "OTHER", rowX + 4f, labelOtherY, TEXT_MUTED.getRGB());
@@ -348,8 +388,8 @@ public class ClickGUI extends Screen {
 
     private void drawSidebarRow(DrawContext context, int mouseX, int mouseY, Row r, boolean searching) {
         boolean active = !searching && (r.cat() != null
-                ? r.cat() == selectedCategory && !cosmeticsOpen
-                : "cosmetics".equals(r.action()) && cosmeticsOpen);
+                ? r.cat() == selectedCategory && !onPage()
+                : "cosmetics".equals(r.action()) && cosmeticsOpen || r.action() != null && r.action().equals(page));
         boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, r.x(), r.y(), r.w(), r.h());
 
         float hv = AnimationUtility.fast(rowHoverAnim.getOrDefault(r.label(), 0f), hovered ? 1f : 0f, 16f);
@@ -369,6 +409,8 @@ public class ClickGUI extends Screen {
             case "cosmetics" -> "star";
             case "configs" -> "configs";
             case "friends" -> "friends";
+            case "rynek" -> "misc";
+            case "gui" -> "settings";
             default -> "edithud";
         };
         Color iconCol = Render2DEngine.interpolateColorC(Render2DEngine.interpolateColorC(TEXT_DIM, TEXT, hv), Color.WHITE, act);
@@ -425,10 +467,14 @@ public class ClickGUI extends Screen {
         List<Module> mods = filteredModules();
         boolean searching = searchActive && !searchText.isEmpty();
         boolean cosmetics = cosmeticsOpen && !searching;
+        boolean editGuiPage = "gui".equals(page) && !searching;
+        boolean rynekPage = "rynek".equals(page) && !searching;
 
         // ---- header: icon + title + subtitle (static: no pop / slide-in when the tab changes) ----
-        String title = searching ? "Search" : cosmetics ? "Cosmetics" : selectedCategory.getName();
-        String headIcon = searching ? "search" : cosmetics ? "star" : categoryIcon(selectedCategory);
+        String title = searching ? "Search" : cosmetics ? "Cosmetics" : editGuiPage ? "Edit GUI"
+                : rynekPage ? "Auto Rynek" : selectedCategory.getName();
+        String headIcon = searching ? "search" : cosmetics ? "star" : editGuiPage ? "settings"
+                : rynekPage ? "misc" : categoryIcon(selectedCategory);
         float chipS = 22f, iconS = 14f;
         float chipCx = cx + 25f, chipCy = py + 23f;
         Render2DEngine.drawRound(context, chipCx - chipS / 2f, chipCy - chipS / 2f, chipS, chipS, 7f,
@@ -437,6 +483,8 @@ public class ClickGUI extends Screen {
         FontRenderers.monsterrat.drawString(context, title, cx + 44f, py + 13f, TEXT.getRGB());
 
         String subtitle = cosmetics ? cosmeticsSubtitle()
+                : editGuiPage ? "Kolor, rozmiar i styl okna"
+                : rynekPage ? "Automatyczny rynek"
                 : hoveredDescPrev != null ? hoveredDescPrev
                 : "LMB toggle  •  RMB settings  •  MMB bind  •  type to search";
         // the line under the title cross-fades when it changes (hovering card to card) instead of flicking
@@ -484,6 +532,18 @@ public class ClickGUI extends Screen {
         if (cosmetics) {
             cards.clear();
             renderCosmetics(context, mouseX, mouseY, cx, py, cw, panelH);
+            hoveredDescPrev = null;
+            return;
+        }
+        if (editGuiPage) {
+            cards.clear();
+            editGui.render(context, mouseX, mouseY, cx, py + HEADER_H, cw, panelH - HEADER_H);
+            hoveredDescPrev = null;
+            return;
+        }
+        if (rynekPage) {
+            cards.clear();
+            renderRynekPage(context, mouseX, mouseY, cx, py + HEADER_H, cw, panelH - HEADER_H);
             hoveredDescPrev = null;
             return;
         }
@@ -768,10 +828,12 @@ public class ClickGUI extends Screen {
         try {
         thunder.hack.gui.font.FontRenderer.globalAlpha = vis;
 
-        float sw = mc.getWindow().getScaledWidth();
+        float sw = mc.getWindow().getScaledWidth() / guiSize();
         spW = 172f;
-        List<AbstractElement> els = getElements(sm);
-        float contentTotal = 0f;
+        // Text in Minecraft keeps its settings in its own editor: the panel holds one button that opens it
+        boolean editor = sm instanceof thunder.hack.features.modules.render.LyricsText;
+        List<AbstractElement> els = editor ? List.of() : getElements(sm);
+        float contentTotal = editor ? 44f : 0f;
         for (AbstractElement el : els) if (el.isVisible()) contentTotal += elementHeight(el);
         float headH = 34f;
         spH = Math.max(60f, Math.min(panelH, headH + contentTotal + 8f));
@@ -870,7 +932,23 @@ public class ClickGUI extends Screen {
         }
         Render2DEngine.popWindow();
 
-        if (contentTotal <= 0.5f)
+        if (editor) {
+            // a pane of liquid glass with an icon: "Otwórz edytor"
+            editorBtnX = ex;
+            editorBtnY = top + 6f;
+            editorBtnW = ew;
+            editorBtnH = 30f;
+            boolean hov = Render2DEngine.isHovered(mouseX, mouseY, editorBtnX, editorBtnY, editorBtnW, editorBtnH);
+            if (!thunder.hack.utility.render.BkLiquidGlass.glass(context, editorBtnX, editorBtnY, editorBtnW, editorBtnH, 9f,
+                    thunder.hack.utility.render.BkLiquidGlass.DISTORTION, vis))
+                Render2DEngine.drawRound(context, editorBtnX, editorBtnY, editorBtnW, editorBtnH, 9f, new Color(30, 30, 38, 200));
+            Render2DEngine.drawRound(context, editorBtnX, editorBtnY, editorBtnW, editorBtnH, 9f,
+                    hov ? Render2DEngine.injectAlpha(acc, 70) : new Color(12, 12, 12, 110));
+            Render2DEngine.drawRound(context, editorBtnX + 8f, editorBtnY + 7f, 16f, 16f, 5f, Render2DEngine.injectAlpha(acc, 110));
+            drawIcon(context, "edithud", editorBtnX + 11f, editorBtnY + 10f, 10f, Color.WHITE);
+            FontRenderers.sf_medium.drawString(context, "Otwórz edytor", editorBtnX + 31f, editorBtnY + 9f, TEXT.getRGB());
+            FontRenderers.sf_medium_mini.drawString(context, "efekty, kolory, podgląd", editorBtnX + 31f, editorBtnY + 19f, TEXT_DIM.getRGB());
+        } else if (contentTotal <= 0.5f)
             FontRenderers.sf_medium_mini.drawString(context, "No configurable settings.", spX + 10f, top + 6f, TEXT_DIM.getRGB());
         } finally {
             thunder.hack.gui.font.FontRenderer.globalAlpha = 1f;
@@ -894,6 +972,50 @@ public class ClickGUI extends Screen {
      * Like the rest of the tabs it has no switch animations - the page, its chips and its cards appear at once.
      */
     private boolean cosmeticsOpen;
+    /** The other in-window tabs: "gui" (Edit GUI) or "rynek" (Auto Rynek), null for a category. */
+    private String page;
+    private final EditGuiPanel editGui = new EditGuiPanel();
+
+    private boolean onPage() {
+        return cosmeticsOpen || page != null;
+    }
+
+    /** Opens the Edit GUI tab (dev hook for screenshot checks). */
+    public void devOpenEditGui() {
+        cosmeticsOpen = false;
+        page = "gui";
+    }
+
+    private float rynekBtnX, rynekBtnY, rynekBtnW, rynekBtnH;
+    /** The Text in Minecraft settings panel's "Otwórz edytor" button, as last drawn. */
+    private float editorBtnX, editorBtnY, editorBtnW, editorBtnH;
+
+    /**
+     * Auto Rynek tab. BK's market page arrives with the AutoMarket port; until then the tab switches the current
+     * market module and opens its window.
+     */
+    private void renderRynekPage(DrawContext context, int mouseX, int mouseY, float x, float y, float w, float h) {
+        Module rynek = ModuleManager.rynek;
+        float cx = x + 14f, cy = y + 14f;
+        FontRenderers.sf_medium.drawString(context, "Rynek", cx, cy, TEXT.getRGB());
+        FontRenderers.sf_medium_mini.drawString(context, rynek != null && rynek.isEnabled() ? "Włączony" : "Wyłączony",
+                cx, cy + 13f, TEXT_DIM.getRGB());
+        rynekBtnW = 150f;
+        rynekBtnH = 22f;
+        rynekBtnX = cx;
+        rynekBtnY = cy + 30f;
+        boolean hov = Render2DEngine.isHovered(mouseX, mouseY, rynekBtnX, rynekBtnY, rynekBtnW, rynekBtnH);
+        Render2DEngine.drawRound(context, rynekBtnX, rynekBtnY, rynekBtnW, rynekBtnH, 6f,
+                hov ? accent().brighter() : accent());
+        String label = "Otwórz ustawienia rynku";
+        FontRenderers.sf_medium.drawString(context, label,
+                rynekBtnX + (rynekBtnW - FontRenderers.sf_medium.getStringWidth(label)) / 2f, rynekBtnY + 7.5f, TEXT.getRGB());
+    }
+
+    private void rynekClick(double mx, double my, int button) {
+        if (button == 0 && Render2DEngine.isHovered(mx, my, rynekBtnX, rynekBtnY, rynekBtnW, rynekBtnH))
+            mc.setScreen(new thunder.hack.features.modules.misc.rynek.RynekScreen());
+    }
     private thunder.hack.features.cosmetics.CosmeticSlot cosmeticSlot = thunder.hack.features.cosmetics.CosmeticSlot.BACKPACK;
     private float cosScroll, cosScrollTarget;
     private float cosGridTop, cosGridBottom;
@@ -1113,8 +1235,8 @@ public class ClickGUI extends Screen {
 
     @Override
     public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean doubled) {
-        int mx = (int) click.x();
-        int my = (int) click.y();
+        int mx = (int) (click.x() / guiSize());
+        int my = (int) (click.y() / guiSize());
         int button = click.button();
 
         // binding mode (entered via middle-click on a card): next mouse-button sets a mouse bind
@@ -1132,6 +1254,12 @@ public class ClickGUI extends Screen {
             }
             if (Render2DEngine.isHovered(mx, my, spSwitchX - 2f, spSwitchY - 2f, 26f, 16f)) {
                 if (settingsModule.isToggleable()) settingsModule.toggle();
+                return true;
+            }
+            if (settingsModule instanceof thunder.hack.features.modules.render.LyricsText text
+                    && Render2DEngine.isHovered(mx, my, editorBtnX, editorBtnY, editorBtnW, editorBtnH)) {
+                thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP, 0.5f);
+                mc.setScreen(new TextEditorScreen(this, text));
                 return true;
             }
             if (Render2DEngine.isHovered(mx, my, spX, spY, spW, spH)) {
@@ -1166,12 +1294,15 @@ public class ClickGUI extends Screen {
             if (r.cat() != null) {
                 selectedCategory = r.cat();
                 cosmeticsOpen = false;
+                page = null;
                 scrollGrid = scrollGridTarget = 0f;
                 searchActive = false;
                 searchText = "";
                 closeSettings();
-            } else if ("cosmetics".equals(r.action())) {
-                cosmeticsOpen = true;
+            } else if ("cosmetics".equals(r.action()) || "gui".equals(r.action()) || "rynek".equals(r.action())) {
+                // tabs inside the window
+                cosmeticsOpen = "cosmetics".equals(r.action());
+                page = cosmeticsOpen ? null : r.action();
                 searchActive = false;
                 searchText = "";
                 closeSettings();
@@ -1183,6 +1314,14 @@ public class ClickGUI extends Screen {
 
         if (cosmeticsOpen && !(searchActive && !searchText.isEmpty()) && button == 0 && cosmeticsClick(mx, my))
             return true;
+        if ("gui".equals(page) && !(searchActive && !searchText.isEmpty())) {
+            editGui.click(mx, my, button);
+            return true;
+        }
+        if ("rynek".equals(page) && !(searchActive && !searchText.isEmpty())) {
+            rynekClick(mx, my, button);
+            return true;
+        }
 
         if (my >= gridTop && my <= gridBottom) {
             for (Card c : cards) {
@@ -1230,9 +1369,10 @@ public class ClickGUI extends Screen {
 
     @Override
     public boolean mouseReleased(net.minecraft.client.gui.Click click) {
-        int mx = (int) click.x();
-        int my = (int) click.y();
+        int mx = (int) (click.x() / guiSize());
+        int my = (int) (click.y() / guiSize());
         int button = click.button();
+        editGui.release();
         if (settingsModule != null)
             for (AbstractElement el : getElements(settingsModule))
                 el.mouseReleased(mx, my, button);
@@ -1242,6 +1382,8 @@ public class ClickGUI extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         float amt = (float) (verticalAmount * 18D);
+        mouseX /= guiSize();
+        mouseY /= guiSize();
         if (settingsModule != null && settingsAnim > 0.5f
                 && Render2DEngine.isHovered(mouseX, mouseY, spX, spY, spW, spH))
             scrollSettingsTarget += amt;
