@@ -90,17 +90,20 @@ public class WallpaperGallery extends Screen {
     /* Render                                                              */
     /* ------------------------------------------------------------------ */
 
+    /**
+     * Darker than the menu so the cards read against it; the wallpaper is still visibly the thing you are about
+     * to change. The glass panes blur this, snapshotted at the GUI's blur split.
+     */
+    @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+        MenuGlass.backdrop(context, this, width, height, mouseX, mouseY, 0.46f, delta);
+    }
+
     @Override
     public void render(@NotNull DrawContext context, int mouseX, int mouseY, float delta) {
         long now = System.currentTimeMillis();
         float step = lastFrame == 0L ? 16f : Math.min(250f, now - lastFrame);
         lastFrame = now;
-
-        // Darker than the menu so the cards read against it; the wallpaper is still visibly the thing you are
-        // about to change, which is the point of not using a flat background here.
-        MenuBackdrop.render(context, this, width, height, mouseX, mouseY, 0.46f, delta);
-        // the glass panes below blur the wallpaper, so snapshot it before any of them is drawn
-        MenuGlass.capture();
         frameStep = step;
 
         cardRects.clear();

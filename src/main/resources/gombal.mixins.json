@@ -5,6 +5,13 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "MixinArmorFeatureRenderer",
+    "MixinCharacterCosmetic",
+    "MixinGuiRendererBlur",
+    "MixinCosmeticHeldItem",
+    "MixinCosmeticHeldItemFeature",
+    "MixinCosmeticInput",
+    "MixinCosmeticPlayerRenderer",
+    "accesors.ILivingEntityRendererFeatures",
     "MixinBlockCollisionSpliterator",
     "MixinBossBarHud",
     "MixinCamera",

@@ -132,6 +132,10 @@ public class ModuleManager implements IManager {
     public static ModuleList moduleList = new ModuleList();
     public static KillEffect killEffect = new KillEffect();
     public static JumpCircle jumpCircle = new JumpCircle();
+    public static thunder.hack.features.modules.render.JumpCircles jumpCircles = new thunder.hack.features.modules.render.JumpCircles();
+    public static thunder.hack.features.modules.render.TargetESP targetESP = new thunder.hack.features.modules.render.TargetESP();
+    public static thunder.hack.features.modules.render.GlassVapor glassVapor = new thunder.hack.features.modules.render.GlassVapor();
+    public static thunder.hack.features.modules.misc.AnticheatDetect anticheatDetect = new thunder.hack.features.modules.misc.AnticheatDetect();
     public static HoleAnchor holeAnchor = new HoleAnchor();
     public static Fullbright fullbright = new Fullbright();
     public static FpsCounter fpsCounter = new FpsCounter();

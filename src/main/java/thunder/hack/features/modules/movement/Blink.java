@@ -48,6 +48,13 @@ public class Blink extends Module {
         Both
     }
 
+    /** How much of the hold is left before the stored packets go out (the Dynamic Island's FakeLag bar). */
+    public float remainingFraction() {
+        int limit = pulse.getValue() ? pulsePackets.getValue() : autoDisable.getValue() ? disablePackets.getValue() : 0;
+        if (limit <= 0) return 1f;
+        return Math.clamp(1f - storedPackets.size() / (float) limit, 0f, 1f);
+    }
+
     private PlayerEntityCopy blinkPlayer;
     public static Vec3d lastPos = Vec3d.ZERO;
     private Vec3d prevVelocity = Vec3d.ZERO;

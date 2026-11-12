@@ -208,6 +208,7 @@ public class ConfigManager implements IManager {
                     parseModule(element.getAsJsonObject(), category);
 
             Command.sendMessage(isRu() ? "Загружен конфиг " + config.getName() : "Loaded " + config.getName());
+            thunder.hack.features.hud.impl.DynamicIsland.configLoaded(config.getName().replace(".gl", ""));
         } catch (Exception e) {
             e.printStackTrace();
         }

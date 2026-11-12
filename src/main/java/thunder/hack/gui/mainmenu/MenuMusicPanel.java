@@ -37,9 +37,15 @@ public final class MenuMusicPanel {
     private MenuMusicPanel() {
     }
 
-    /** Card size in scaled pixels. Everything else is derived from these two. */
-    public static final float WIDTH = 236f;
-    public static final float HEIGHT = 90f;
+    /** Card size in scaled pixels - BKClient's MainMenuMusicCard (215 x 76). */
+    public static final float WIDTH = thunder.hack.features.hud.impl.BkMusicUi.CARD_WIDTH;
+    public static final float HEIGHT = thunder.hack.features.hud.impl.BkMusicUi.CARD_HEIGHT;
+
+    /** BK's hover animations: the card (300 ms) and each button (200 ms), eased. */
+    private static float cardHover;
+    private static final float[] buttonHover = new float[3];
+    private static long lastFrame;
+    private static thunder.hack.features.hud.impl.BkMusicUi.Buttons lastButtons;
 
     private static final float PAD = 10f;
     private static final float COVER = 44f;
@@ -56,11 +62,11 @@ public final class MenuMusicPanel {
     private static float barLeft, barWidth, barY;
 
     /** One frame's worth of truth, from whichever source is live. */
-    private record View(boolean present, boolean live, String title, String artist,
+    public record View(boolean present, boolean live, String title, String artist,
                         @Nullable Identifier cover, long position, long duration, boolean playing) {
     }
 
-    private static View read() {
+    public static View read() {
         if (SpotifyAuth.authorised()) {
             // Tells the poller the panel is on screen; without this it goes quiet after a few seconds.
             SpotifyPlayer.touch(1000L);
@@ -105,36 +111,38 @@ public final class MenuMusicPanel {
             view = new View(true, view.live(), "Nic nie gra", "Włącz muzykę w Spotify", null, 0L, 0L, false);
 
         float left = centreX - WIDTH / 2f;
-        int a = Math.round(Math.clamp(alpha, 0f, 1f) * 255f);
 
         // the current lyric, when MusicWidget's Lyrics setting is on and there is one to show
         boolean lyricsOn = lyricsOn();
         String lyric = lyricsOn ? lyricLine(view) : "";
-        float height = height();
 
-        // Frosted glass like the rest of the menu - the wallpaper blurred behind it, no rim, no accent glow.
-        MenuGlass.draw(context, left, top, WIDTH, height, RADIUS, alpha, 0f);
+        // BK's hover animations, eased toward their targets at BK's durations
+        long now = System.nanoTime();
+        float dt = lastFrame == 0L ? 0f : Math.min(0.1f, (now - lastFrame) / 1e9f);
+        lastFrame = now;
+        boolean onCard = mouseX >= left && mouseX <= left + WIDTH && mouseY >= top && mouseY <= top + HEIGHT;
+        cardHover = approach(cardHover, onCard ? 1f : 0f, dt / 0.30f);
+        var prev = lastButtons;
+        for (int i = 0; i < 3; i++) {
+            float[] r = prev == null ? null : i == 0 ? prev.previous() : i == 1 ? prev.play() : prev.next();
+            boolean hov = thunder.hack.features.hud.impl.BkMusicUi.inside(r, mouseX, mouseY);
+            buttonHover[i] = approach(buttonHover[i], hov ? 1f : 0f, dt / 0.20f);
+        }
 
-        /* Artwork, drawn as served and framed rather than clipped - the engine has no rounded scissor. */
-        float coverX = left + PAD, coverY = top + PAD;
-        Render2DEngine.drawRound(context, coverX, coverY, COVER, COVER, 7f,
-                new Color(255, 255, 255, Math.round(18 * alpha)));
-
-        if (view.cover() != null)
-            Render2DEngine.renderTexture(context, view.cover(), coverX + 1.5f, coverY + 1.5f,
-                    COVER - 3f, COVER - 3f, 0, 0, COVER, COVER, COVER, COVER,
-                    new Color(255, 255, 255, a));
-
-        float textX = coverX + COVER + 11f;
-        float textW = left + WIDTH - PAD - textX;
-
-        FontRenderers.sf_bold_mini.drawString(context, clip(FontRenderers.sf_bold_mini, view.title(), textW),
-                textX, top + PAD + 2f, fade(TITLE, alpha).getRGB());
-        FontRenderers.sf_medium_mini.drawString(context, clip(view.artist(), textW),
-                textX, top + PAD + 14f, fade(ARTIST, alpha).getRGB());
-
-        drawProgress(context, view, textX, top, left, alpha);
-        drawTransport(context, view, centreX, top, alpha, mouseX, mouseY);
+        var track = new thunder.hack.features.hud.impl.BkMusicUi.Track(true, view.title(), view.artist(), view.cover(),
+                view.position(), view.duration(), view.playing(), lyric);
+        lastButtons = thunder.hack.features.hud.impl.BkMusicUi.drawCard(context, left, top, track,
+                easeInOut(cardHover), new float[]{easeInOut(buttonHover[0]), easeInOut(buttonHover[1]), easeInOut(buttonHover[2])},
+                Math.clamp(alpha, 0f, 1f));
+        float[] p = lastButtons.play();
+        buttonSize = 16f;
+        buttonY = p[1];
+        prevX = lastButtons.previous()[0];
+        playX = p[0];
+        nextX = lastButtons.next()[0];
+        barLeft = left + 11f;
+        barWidth = WIDTH - 22f;
+        barY = top + 10f + 32f + 10f;
 
         if (lyricsOn) {
             String shown = lyric.isEmpty() ? "..." : lyric;
@@ -222,9 +230,19 @@ public final class MenuMusicPanel {
     /* Input                                                               */
     /* ------------------------------------------------------------------ */
 
+    /** BK's hit box: 16 x 16 around each 10 px control (prevX/playX/nextX already hold the box corner). */
     private static boolean hovered(double mx, double my, float x) {
         if (buttonSize <= 0f) return false;
-        return mx >= x - 5 && mx <= x + buttonSize + 5 && my >= buttonY - 5 && my <= buttonY + buttonSize + 5;
+        return mx >= x && mx <= x + buttonSize && my >= buttonY && my <= buttonY + buttonSize;
+    }
+
+    private static float approach(float v, float target, float step) {
+        return v < target ? Math.min(target, v + step) : Math.max(target, v - step);
+    }
+
+    /** BK's FIGMA_EASE_IN_OUT, close enough as a cubic in-out. */
+    private static float easeInOut(float x) {
+        return x < 0.5f ? 4f * x * x * x : 1f - (float) Math.pow(-2f * x + 2f, 3) / 2f;
     }
 
     /** True when the cursor is anywhere on the card, so the menu knows not to treat the click as "open". */
@@ -271,6 +289,22 @@ public final class MenuMusicPanel {
         }
 
         return false;
+    }
+
+    /** Transport for other surfaces (the Dynamic Island): Spotify when logged in, the media keys otherwise. */
+    public static void previous() {
+        if (SpotifyAuth.authorised()) SpotifyPlayer.previous();
+        else media(VK_MEDIA_PREV_TRACK);
+    }
+
+    public static void toggle() {
+        if (SpotifyAuth.authorised()) SpotifyPlayer.toggle();
+        else media(VK_MEDIA_PLAY_PAUSE);
+    }
+
+    public static void next() {
+        if (SpotifyAuth.authorised()) SpotifyPlayer.next();
+        else media(VK_MEDIA_NEXT_TRACK);
     }
 
     /* Windows virtual-key codes for the media keys - the fallback transport, same as the HUD widget uses.

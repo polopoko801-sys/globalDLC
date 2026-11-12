@@ -316,12 +316,15 @@ public class ClickGUI extends Screen {
         float activeY = -1f;
         for (Module.Category cat : cats) {
             sidebarRows.add(new Row(cat, null, cat.getName(), rowX, ry, rowW, ROW_H));
-            if (cat == selectedCategory) activeY = ry;
+            if (cat == selectedCategory && !cosmeticsOpen) activeY = ry;
             ry += ROW_H + 2f;
         }
         ry += 6f;
         float labelOtherY = ry;
         ry += 12f;
+        sidebarRows.add(new Row(null, "cosmetics", "Cosmetics", rowX, ry, rowW, ROW_H));
+        if (cosmeticsOpen) activeY = ry;
+        ry += ROW_H + 2f;
         sidebarRows.add(new Row(null, "configs", "Configs", rowX, ry, rowW, ROW_H));
         ry += ROW_H + 2f;
         sidebarRows.add(new Row(null, "friends", "Friends", rowX, ry, rowW, ROW_H));
@@ -331,36 +334,28 @@ public class ClickGUI extends Screen {
         FontRenderers.sf_medium_mini.drawString(context, "FEATURES", rowX + 4f, labelFeaturesY, TEXT_MUTED.getRGB());
         FontRenderers.sf_medium_mini.drawString(context, "OTHER", rowX + 4f, labelOtherY, TEXT_MUTED.getRGB());
 
-        // sliding pill
+        // selection pill: sits straight on the selected tab (no glide/stretch animation between tabs)
         boolean searching = searchActive && !searchText.isEmpty();
         if (activeY >= 0f && !searching) {
-            // a soft glide rather than a near-instant snap, so the highlight visibly travels to the new category
-            pillY = pillY < 0f ? activeY : AnimationUtility.fast(pillY, activeY, 5f);
-            // while it travels it stretches towards where it is going, and settles back to its size on arrival
-            float gap = activeY - pillY;
-            float stretch = Math.min(12f, Math.abs(gap) * 0.35f);
-            float top = gap < 0f ? pillY - stretch : pillY;
-            float height = ROW_H + stretch;
-            Render2DEngine.drawBlurredShadow(context, rowX, top, rowW, height, 8, Render2DEngine.injectAlpha(acc, 40));
-            Render2DEngine.drawRound(context, rowX, top, rowW, height, 6f, Render2DEngine.injectAlpha(acc, 52));
-            Render2DEngine.drawRound(context, rowX, top + 5f, 2.5f, height - 10f, 1.25f, acc);
+            pillY = activeY;
+            Render2DEngine.drawBlurredShadow(context, rowX, pillY, rowW, ROW_H, 8, Render2DEngine.injectAlpha(acc, 40));
+            Render2DEngine.drawRound(context, rowX, pillY, rowW, ROW_H, 6f, Render2DEngine.injectAlpha(acc, 52));
+            Render2DEngine.drawRound(context, rowX, pillY + 5f, 2.5f, ROW_H - 10f, 1.25f, acc);
         }
 
         for (Row r : sidebarRows) drawSidebarRow(context, mouseX, mouseY, r, searching);
     }
 
     private void drawSidebarRow(DrawContext context, int mouseX, int mouseY, Row r, boolean searching) {
-        boolean active = r.cat() != null && r.cat() == selectedCategory && !searching;
+        boolean active = !searching && (r.cat() != null
+                ? r.cat() == selectedCategory && !cosmeticsOpen
+                : "cosmetics".equals(r.action()) && cosmeticsOpen);
         boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, r.x(), r.y(), r.w(), r.h());
 
         float hv = AnimationUtility.fast(rowHoverAnim.getOrDefault(r.label(), 0f), hovered ? 1f : 0f, 16f);
         rowHoverAnim.put(r.label(), hv);
-        // A category row lights up by how close the sliding pill is, so the highlight visibly sweeps across
-        // every category between the old and the new one instead of fading out here and in over there.
-        float act = r.cat() != null && !searching && pillY >= 0f
-                ? Math.clamp(1f - Math.abs(pillY - r.y()) / ROW_H, 0f, 1f)
-                : AnimationUtility.fast(rowHoverAnim.getOrDefault(r.label() + "#a", 0f), active ? 1f : 0f, 14f);
-        rowHoverAnim.put(r.label() + "#a", act);
+        // the selected tab is lit immediately - no fade between tabs
+        float act = active ? 1f : 0f;
 
         if (hv > 0.01f && act < 0.99f)
             Render2DEngine.drawRound(context, r.x(), r.y(), r.w(), r.h(), 6f, new Color(255, 255, 255, (int) (14 * hv * (1f - act))));
@@ -371,17 +366,17 @@ public class ClickGUI extends Screen {
         Color chipBg = Render2DEngine.interpolateColorC(new Color(255, 255, 255, 12), Render2DEngine.injectAlpha(accent(), 90), act);
         Render2DEngine.drawRound(context, cx, cy, chip, chip, 4.5f, chipBg);
         String iconName = r.cat() != null ? categoryIcon(r.cat()) : switch (r.action()) {
+            case "cosmetics" -> "star";
             case "configs" -> "configs";
             case "friends" -> "friends";
             default -> "edithud";
         };
         Color iconCol = Render2DEngine.interpolateColorC(Render2DEngine.interpolateColorC(TEXT_DIM, TEXT, hv), Color.WHITE, act);
-        // hover: the icon grows a little inside its chip and the label leans right, so the row answers the mouse
-        float grow = 1.2f * hv;
-        drawIcon(context, iconName, cx + 2.5f - grow / 2f, cy + 2.5f - grow / 2f, chip - 5f + grow, iconCol);
+        // fixed size and position: the icon no longer grows and the label no longer slides on hover/selection
+        drawIcon(context, iconName, cx + 2.5f, cy + 2.5f, chip - 5f, iconCol);
 
         Color textColor = Render2DEngine.interpolateColorC(Render2DEngine.interpolateColorC(TEXT_DIM, TEXT, hv), TEXT, act);
-        FontRenderers.sf_medium.drawString(context, r.label(), r.x() + 26f + 2.5f * Math.max(hv, act), r.y() + 7f, textColor.getRGB());
+        FontRenderers.sf_medium.drawString(context, r.label(), r.x() + 26f, r.y() + 7f, textColor.getRGB());
 
     }
 
@@ -429,23 +424,20 @@ public class ClickGUI extends Screen {
         float cw = panelW - SIDEBAR_W;
         List<Module> mods = filteredModules();
         boolean searching = searchActive && !searchText.isEmpty();
+        boolean cosmetics = cosmeticsOpen && !searching;
 
-        // ---- header: icon + title + subtitle ----
-        String title = searching ? "Search" : selectedCategory.getName();
-        String headIcon = searching ? "search" : categoryIcon(selectedCategory);
-        // category change: the header icon pops (ease-out-back) and the title slides in from the left as it fades up
-        float headT = Math.clamp((System.currentTimeMillis() - catChangedAt) / 380f, 0f, 1f);
-        float pop = (float) EaseOutBack.dropAnimation(headT);
-        float chipS = 22f * (0.6f + 0.4f * pop), iconS = 14f * (0.6f + 0.4f * pop);
+        // ---- header: icon + title + subtitle (static: no pop / slide-in when the tab changes) ----
+        String title = searching ? "Search" : cosmetics ? "Cosmetics" : selectedCategory.getName();
+        String headIcon = searching ? "search" : cosmetics ? "star" : categoryIcon(selectedCategory);
+        float chipS = 22f, iconS = 14f;
         float chipCx = cx + 25f, chipCy = py + 23f;
-        Render2DEngine.drawRound(context, chipCx - chipS / 2f, chipCy - chipS / 2f, chipS, chipS, 7f * chipS / 22f,
+        Render2DEngine.drawRound(context, chipCx - chipS / 2f, chipCy - chipS / 2f, chipS, chipS, 7f,
                 Render2DEngine.injectAlpha(accent(), 60));
         drawIcon(context, headIcon, chipCx - iconS / 2f, chipCy - iconS / 2f, iconS, accentText());
-        float titleE = easeOutCubic(headT);
-        FontRenderers.monsterrat.drawString(context, title, cx + 44f - (1f - titleE) * 10f, py + 13f,
-                Render2DEngine.injectAlpha(TEXT, (int) (TEXT.getAlpha() * titleE)).getRGB());
+        FontRenderers.monsterrat.drawString(context, title, cx + 44f, py + 13f, TEXT.getRGB());
 
-        String subtitle = hoveredDescPrev != null ? hoveredDescPrev
+        String subtitle = cosmetics ? cosmeticsSubtitle()
+                : hoveredDescPrev != null ? hoveredDescPrev
                 : "LMB toggle  •  RMB settings  •  MMB bind  •  type to search";
         // the line under the title cross-fades when it changes (hovering card to card) instead of flicking
         if (!subtitle.equals(subtitleShown)) {
@@ -489,6 +481,15 @@ public class ClickGUI extends Screen {
 
         Render2DEngine.drawRect(context, cx + 12f, py + HEADER_H - 1f, cw - 24f, 0.6f, HAIRLINE);
 
+        if (cosmetics) {
+            cards.clear();
+            renderCosmetics(context, mouseX, mouseY, cx, py, cw, panelH);
+            hoveredDescPrev = null;
+            return;
+        }
+        cosmeticCards.clear();
+        cosmeticChips.clear();
+
         // ---- grid ----
         float gx = cx + 12f;
         float gy = py + HEADER_H + 6f;
@@ -507,8 +508,6 @@ public class ClickGUI extends Screen {
         scrollGrid = AnimationUtility.fast(scrollGrid, scrollGridTarget, 12f);
 
         cards.clear();
-        catAnim = AnimationUtility.fast(catAnim, 1f, 6f);
-        long sinceCat = System.currentTimeMillis() - catChangedAt;
         Render2DEngine.addWindow(context, cx, gridTop, cx + cw, gridBottom, 1.0);
         for (int i = 0; i < mods.size(); i++) {
             Module m = mods.get(i);
@@ -516,16 +515,8 @@ public class ClickGUI extends Screen {
             int row = i / cols;
             float cxp = gx + col * (cardW + gap);
             float cyp = gy + row * (CARD_H + gap) + scrollGrid;
-            // cascade: each card starts a moment after the one before, rises into place and fades its text up
-            float t = easeOutCubic(Math.clamp((sinceCat - i * CARD_STAGGER_MS) / CARD_IN_MS, 0f, 1f));
-            if (t <= 0.01f) continue;
-            float slide = (1f - t) * 16f;
-            thunder.hack.gui.font.FontRenderer.globalAlpha = t;
-            try {
-                drawCard(context, mouseX, mouseY, m, cxp, cyp + slide, cardW, CARD_H, slide, searching);
-            } finally {
-                thunder.hack.gui.font.FontRenderer.globalAlpha = 1f;
-            }
+            // cards appear in place at once when the tab changes (no cascade / slide-up / fade-in)
+            drawCard(context, mouseX, mouseY, m, cxp, cyp, cardW, CARD_H, 0f, searching);
         }
         Render2DEngine.popWindow();
 
@@ -895,6 +886,159 @@ public class ClickGUI extends Screen {
         return 13;
     }
 
+    // ------------------------------------------------------------------ cosmetics
+
+    /*
+     * Wardrobe page, ported from BKClient's CosmeticsPage (MIT, bkubiakdev) into this GUI's style: slot chips,
+     * a "none" card plus one card per cosmetic with a live 3D preview, click to equip, click again to remove.
+     * Like the rest of the tabs it has no switch animations - the page, its chips and its cards appear at once.
+     */
+    private boolean cosmeticsOpen;
+    private thunder.hack.features.cosmetics.CosmeticSlot cosmeticSlot = thunder.hack.features.cosmetics.CosmeticSlot.BACKPACK;
+    private float cosScroll, cosScrollTarget;
+    private float cosGridTop, cosGridBottom;
+    private record CosmeticCard(thunder.hack.features.cosmetics.CosmeticEntry entry, float x, float y, float w, float h) {}
+    private record CosmeticChip(thunder.hack.features.cosmetics.CosmeticSlot slot, float x, float y, float w, float h) {}
+    private final List<CosmeticCard> cosmeticCards = new ArrayList<>();
+    private final List<CosmeticChip> cosmeticChips = new ArrayList<>();
+    private static final float COS_CARD_H = 112f;
+    private static final float COS_PREVIEW_H = 76f;
+
+    private static String slotName(thunder.hack.features.cosmetics.CosmeticSlot slot) {
+        return switch (slot) {
+            case BACKPACK -> "Backpacks";
+            case WINGS -> "Wings";
+            case MELEE -> "Melee";
+            case CHARACTER -> "Characters";
+        };
+    }
+
+    private String cosmeticsSubtitle() {
+        var equipped = thunder.hack.features.cosmetics.CosmeticManager.getInstance().equipped(cosmeticSlot);
+        String hint = cosmeticSlot == thunder.hack.features.cosmetics.CosmeticSlot.MELEE
+                ? "swords & axes  •  G inspect" : cosmeticSlot == thunder.hack.features.cosmetics.CosmeticSlot.CHARACTER
+                ? "replaces your skin" : "only you see it";
+        return "Equipped: " + (equipped == null ? "none" : equipped.name()) + "  •  " + hint;
+    }
+
+    private void renderCosmetics(DrawContext context, int mouseX, int mouseY, float cx, float py, float cw, float panelH) {
+        var manager = thunder.hack.features.cosmetics.CosmeticManager.getInstance();
+        var slots = thunder.hack.features.cosmetics.CosmeticSlot.values();
+        float gx = cx + 12f, gw = cw - 24f;
+
+        // slot chips
+        cosmeticChips.clear();
+        float chipY = py + HEADER_H + 6f, chipH = 18f, chipGap = 6f;
+        float chipW = Math.min(96f, (gw - chipGap * (slots.length - 1)) / slots.length);
+        for (int i = 0; i < slots.length; i++) {
+            var slot = slots[i];
+            float x = gx + i * (chipW + chipGap);
+            boolean selected = slot == cosmeticSlot;
+            boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, x, chipY, chipW, chipH);
+            Render2DEngine.drawRound(context, x, chipY, chipW, chipH, 6f, selected
+                    ? Render2DEngine.injectAlpha(accent(), 70)
+                    : new Color(255, 255, 255, hovered ? 22 : 10));
+            FontRenderers.sf_medium_mini.drawCenteredString(context, slotName(slot), x + chipW / 2f, chipY + 6.5f,
+                    (selected ? accentText() : hovered ? TEXT : TEXT_DIM).getRGB());
+            cosmeticChips.add(new CosmeticChip(slot, x, chipY, chipW, chipH));
+        }
+
+        // grid
+        var entries = thunder.hack.features.cosmetics.CosmeticCatalog.entries(cosmeticSlot);
+        cosGridTop = chipY + chipH + 7f;
+        cosGridBottom = py + panelH - 18f;
+        float viewH = cosGridBottom - cosGridTop;
+        float gap = 8f;
+        int cols = Math.max(2, Math.min(4, (int) (gw / 112f)));
+        float cardW = (gw - gap * (cols - 1)) / cols;
+        int count = entries.size() + 1;
+        int rows = (count + cols - 1) / cols;
+        float totalH = rows * (COS_CARD_H + gap) - gap;
+        float maxScroll = Math.max(0f, totalH - viewH);
+        cosScrollTarget = Math.max(-maxScroll, Math.min(0f, cosScrollTarget));
+        cosScroll = AnimationUtility.fast(cosScroll, cosScrollTarget, 12f);
+
+        cosmeticCards.clear();
+        List<thunder.hack.features.cosmetics.render.CosmeticPreviewGui.Card> previews = new ArrayList<>();
+        var equipped = manager.equipped(cosmeticSlot);
+        Render2DEngine.addWindow(context, gx - 2f, cosGridTop, gx + gw + 2f, cosGridBottom, 1.0);
+        for (int i = 0; i < count; i++) {
+            float x = gx + (i % cols) * (cardW + gap);
+            float y = cosGridTop + (i / cols) * (COS_CARD_H + gap) + cosScroll;
+            if (y + COS_CARD_H < cosGridTop || y > cosGridBottom) continue;
+            var entry = i == 0 ? null : entries.get(i - 1);
+            boolean selected = entry == null ? equipped == null : manager.isEquipped(entry);
+            boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, x, y, cardW, COS_CARD_H)
+                    && mouseY >= cosGridTop && mouseY <= cosGridBottom;
+            cosmeticCards.add(new CosmeticCard(entry, x, y, cardW, COS_CARD_H));
+
+            Render2DEngine.drawRound(context, x, y, cardW, COS_CARD_H, 8f, hovered ? CARD_HOVER : CARD);
+            if (selected)
+                Render2DEngine.drawRound(context, x, y, cardW, COS_CARD_H, 8f, Render2DEngine.injectAlpha(accent(), 38));
+            Render2DEngine.drawRound(context, x + 5f, y + 5f, cardW - 10f, COS_PREVIEW_H, 6f, new Color(0, 0, 0, 60));
+            if (entry == null) {
+                drawIcon(context, "close", x + cardW / 2f - 9f, y + 5f + COS_PREVIEW_H / 2f - 9f, 18f, TEXT_MUTED);
+            } else {
+                previews.add(new thunder.hack.features.cosmetics.render.CosmeticPreviewGui.Card(
+                        entry, x + 8f, y + 7f, cardW - 16f, COS_PREVIEW_H - 4f, 1f));
+            }
+            if (selected) {
+                Render2DEngine.drawRound(context, x + cardW - 17f, y + 9f, 10f, 10f, 3f, accent());
+            }
+
+            // text is not scissor-clipped: only draw it while the line is inside the grid
+            float nameY = y + COS_PREVIEW_H + 12f, actionY = y + COS_PREVIEW_H + 24f;
+            String name = entry == null ? "None" : entry.name();
+            if (nameY >= cosGridTop && nameY + 8f <= cosGridBottom)
+                FontRenderers.sf_medium.drawString(context, trim(FontRenderers.sf_medium, name, cardW - 14f), x + 7f, nameY, TEXT.getRGB());
+            String action = selected ? (entry == null ? "Selected" : "Click to remove") : "Click to equip";
+            if (actionY >= cosGridTop && actionY + 7f <= cosGridBottom)
+                FontRenderers.sf_medium_mini.drawString(context, action, x + 7f, actionY,
+                        (selected ? accentText() : TEXT_MUTED).getRGB());
+        }
+        Render2DEngine.popWindow();
+
+        thunder.hack.features.cosmetics.render.CosmeticPreviewGui.submit(context, previews,
+                (int) Math.floor(gx - 2f), (int) Math.ceil(cosGridTop), (int) Math.ceil(gx + gw + 2f), (int) Math.floor(cosGridBottom));
+
+        // scrollbar
+        if (maxScroll > 0f) {
+            float trackH = viewH - 4f;
+            float thumbH = Math.max(18f, trackH * (viewH / totalH));
+            float thumbY = cosGridTop + 2f + (trackH - thumbH) * (-cosScroll / maxScroll);
+            Render2DEngine.drawRound(context, cx + cw - 7f, thumbY, 3f, thumbH, 1.5f, new Color(255, 255, 255, 50));
+        }
+
+        String footer = manager.persistenceError() != null ? manager.persistenceError()
+                : entries.size() + " in collection";
+        FontRenderers.sf_medium_mini.drawString(context, footer, gx, py + panelH - 12f,
+                (manager.persistenceError() != null ? new Color(0xFFB454) : TEXT_MUTED).getRGB());
+    }
+
+    /** Left click on the cosmetics page; true when it was consumed. */
+    private boolean cosmeticsClick(int mx, int my) {
+        for (CosmeticChip chip : cosmeticChips) {
+            if (!Render2DEngine.isHovered(mx, my, chip.x(), chip.y(), chip.w(), chip.h())) continue;
+            if (chip.slot() != cosmeticSlot) {
+                cosmeticSlot = chip.slot();
+                cosScroll = cosScrollTarget = 0f;
+                thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP, 0.5f);
+            }
+            return true;
+        }
+        if (my < cosGridTop || my > cosGridBottom) return false;
+        var manager = thunder.hack.features.cosmetics.CosmeticManager.getInstance();
+        for (CosmeticCard card : cosmeticCards) {
+            if (!Render2DEngine.isHovered(mx, my, card.x(), card.y(), card.w(), card.h())) continue;
+            boolean remove = card.entry() == null || manager.isEquipped(card.entry());
+            if (remove) manager.unequip(cosmeticSlot);
+            else manager.equip(card.entry());
+            thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP, 0.5f);
+            return true;
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private List<Module> filteredModules() {
@@ -1017,15 +1161,17 @@ public class ClickGUI extends Screen {
         for (Row r : sidebarRows) {
             if (!Render2DEngine.isHovered(mx, my, r.x(), r.y(), r.w(), r.h())) continue;
             // a light tick on every sidebar click: switching category, Configs, Friends, Edit HUD
-            boolean changes = r.cat() == null || r.cat() != selectedCategory;
+            boolean changes = r.cat() == null || r.cat() != selectedCategory || cosmeticsOpen;
             if (changes) thunder.hack.utility.UiSounds.play(thunder.hack.utility.UiSounds.Sound.TAP, 0.5f);
             if (r.cat() != null) {
-                if (r.cat() != selectedCategory) {
-                    catAnim = 0f;
-                    catChangedAt = System.currentTimeMillis();
-                }
                 selectedCategory = r.cat();
+                cosmeticsOpen = false;
                 scrollGrid = scrollGridTarget = 0f;
+                searchActive = false;
+                searchText = "";
+                closeSettings();
+            } else if ("cosmetics".equals(r.action())) {
+                cosmeticsOpen = true;
                 searchActive = false;
                 searchText = "";
                 closeSettings();
@@ -1034,6 +1180,9 @@ public class ClickGUI extends Screen {
             }
             return true;
         }
+
+        if (cosmeticsOpen && !(searchActive && !searchText.isEmpty()) && button == 0 && cosmeticsClick(mx, my))
+            return true;
 
         if (my >= gridTop && my <= gridBottom) {
             for (Card c : cards) {
@@ -1096,6 +1245,8 @@ public class ClickGUI extends Screen {
         if (settingsModule != null && settingsAnim > 0.5f
                 && Render2DEngine.isHovered(mouseX, mouseY, spX, spY, spW, spH))
             scrollSettingsTarget += amt;
+        else if (cosmeticsOpen && !(searchActive && !searchText.isEmpty()))
+            cosScrollTarget += amt * 2f;
         else
             scrollGridTarget += amt;
         return true;

@@ -67,6 +67,8 @@ public class ThunderHack implements ModInitializer {
         Managers.subscribe();
 
         Render2DEngine.initShaders();
+        // cosmetics (ported from BKClient): GUI preview renderer, asset reload hook, melee tick hook
+        thunder.hack.features.cosmetics.render.CosmeticPreviewGui.register();
         ModuleManager.rpc.startRpc();
         WatchReporter.start();
         thunder.hack.core.manager.client.AppLink.start();

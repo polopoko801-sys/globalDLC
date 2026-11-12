@@ -105,13 +105,17 @@ public class MainMenuScreen extends Screen {
     /* Render                                                              */
     /* ------------------------------------------------------------------ */
 
+    /** The wallpaper, and the snapshot every pane of glass in the menu (the music card too) looks through. */
+    @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+        MenuGlass.backdrop(context, this, width, height, mouseX, mouseY, 0.22f, delta);
+    }
+
     @Override
     public void render(@NotNull DrawContext context, int mouseX, int mouseY, float delta) {
         float w = width, h = height;
 
-        MenuBackdrop.render(context, this, w, h, mouseX, mouseY, 0.22f, delta);
-        // the glass panels blur exactly this: the wallpaper, before anything is drawn over it
-        MenuGlass.capture();
+        // the wallpaper and the glass snapshot of it are drawn in renderBackground, before this
 
         // Advanced exactly once per frame; every later read uses peek().
         float progress = open.direction(menuOpen).advance();

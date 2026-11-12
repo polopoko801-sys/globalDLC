@@ -27,6 +27,28 @@ public final class MenuGlass {
     }
 
     /**
+     * The wallpaper, then the glass snapshot of it - for a screen's {@code renderBackground}.
+     *
+     * <p>GUI drawing is deferred on 1.21.11: the wallpaper recorded here lands on the frame only when the GUI
+     * renderer replays it, so a copy taken now ({@link #capture()}) saw an empty frame and every pane of glass
+     * over it, the music card included, came out black. The blur split is the point where the renderer has
+     * drawn exactly what was recorded before it, so the snapshot is taken there instead of vanilla's blur.
+     */
+    public static void backdrop(DrawContext context, net.minecraft.client.gui.screen.Screen screen, float w, float h,
+                                int mouseX, int mouseY, float dim, float delta) {
+        MenuBackdrop.render(context, screen, w, h, mouseX, mouseY, dim, delta);
+        // the split falls at the start of the current root layer, so the wallpaper must close its own layer first
+        context.createNewRootLayer();
+        ScreenCapture.deferToBlur();
+        try {
+            context.applyBlur();
+        } catch (IllegalStateException alreadyBlurred) {
+            // something blurred earlier this frame: fall back to the immediate snapshot
+            capture();
+        }
+    }
+
+    /**
      * One pane of glass.
      *
      * @param alpha the pane's opacity, 0 to 1 - the blur fades with it

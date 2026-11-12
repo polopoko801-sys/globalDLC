@@ -71,10 +71,18 @@ public class MusicWidget extends HudElement {
     }
 
     public enum Layout {
+        /** BKClient's music player 1:1 - compact (header, cover row, progress, controls). */
+        BK,
+        /** BKClient's big player 1:1 - large cover with the title on it, live lyric line, progress, controls. */
+        BKBig,
         /** One line: cover, track, artist, save, play. */
         Compact,
         /** The full panel: big cover, progress, transport, shuffle, repeat, volume. */
         Expanded
+    }
+
+    public enum CoverSide {
+        Left, Right
     }
 
     /** The word highlight: off, the client accent, or plain white. */
@@ -83,7 +91,13 @@ public class MusicWidget extends HudElement {
     }
 
     private final Setting<Source> source = new Setting<>("Source", Source.Auto);
-    private final Setting<Layout> layout = new Setting<>("Layout", Layout.Expanded);
+    private final Setting<Layout> layout = new Setting<>("Layout", Layout.BK);
+    /** BK layouts: which side the cover sits on (compact), the artist line, the playback buttons. */
+    private final Setting<CoverSide> bkCover = new Setting<>("CoverSide", CoverSide.Left,
+            v -> layout.getValue() == Layout.BK);
+    private final Setting<Boolean> bkArtist = new Setting<>("ShowArtist", true,
+            v -> layout.getValue() == Layout.BK || layout.getValue() == Layout.BKBig);
+    private final BkMusicUi.LyricFade bkLyric = new BkMusicUi.LyricFade();
     private final Setting<Float> scale = new Setting<>("Scale", 1.3f, 0.6f, 3f);
 
     private final Setting<Boolean> showCover = new Setting<>("Cover", true);
@@ -251,6 +265,11 @@ public class MusicWidget extends HudElement {
 
         hots.clear();
 
+        if (layout.getValue() == Layout.BK || layout.getValue() == Layout.BKBig) {
+            renderBk(context, view);
+            return;
+        }
+
         float s = scale.getValue();
         boolean wide = layout.getValue() == Layout.Expanded;
         float width = wide ? WIDE_WIDTH : COMPACT_WIDTH;
@@ -283,6 +302,52 @@ public class MusicWidget extends HudElement {
         // Dragging is continuous, so it is resolved here, from the live cursor, rather than from the
         // discrete press events - a slider that only moved on click would be unusable.
         if (dragging != Drag.None) applyDrag(view);
+    }
+
+    /** BKClient's player, drawn by {@link BkMusicUi} from this widget's own sources. */
+    private void renderBk(DrawContext context, View view) {
+        boolean big = layout.getValue() == Layout.BKBig;
+        boolean ctrl = controls.getValue();
+        float s = scale.getValue();
+        float width = big ? BkMusicUi.BIG_WIDTH : BkMusicUi.WIDTH;
+        float height = big ? BkMusicUi.bigHeight(ctrl) : BkMusicUi.compactHeight(ctrl);
+        boolean reverse = getPosX() > (mc.getWindow().getScaledWidth() / 2f);
+        float left = reverse ? getPosX() - width : getPosX();
+        float top = getPosY();
+
+        String lyric = "";
+        if (big && view.available() && lyrics.getValue()) {
+            var found = thunder.hack.utility.spotify.Lyrics.get(view.title(), view.artist(), view.duration());
+            if (found != null) lyric = found.lineAt(view.position());
+        }
+        BkMusicUi.Track track = new BkMusicUi.Track(view.available(),
+                view.available() ? view.title() : idleLine(view), view.available() ? view.artist() : "",
+                showCover.getValue() ? view.cover() : null,
+                view.available() ? view.position() : 0L, view.available() && view.durationKnown() ? view.duration() : 0L,
+                view.playing(), lyric);
+
+        context.getMatrices().pushMatrix();
+        context.getMatrices().translate(getPosX(), getPosY());
+        context.getMatrices().scale(s, s);
+        context.getMatrices().translate(-getPosX(), -getPosY());
+        BkMusicUi.Buttons b = big
+                ? BkMusicUi.drawBig(context, left, top, track, ctrl, bkArtist.getValue(), bkLyric, 1f)
+                : BkMusicUi.drawCompact(context, left, top, track, ctrl, bkArtist.getValue(),
+                bkCover.getValue() == CoverSide.Right, "Music Player", 1f);
+        context.getMatrices().popMatrix();
+
+        int left_ = GLFW.GLFW_MOUSE_BUTTON_LEFT;
+        if (b.previous() != null) hot(b.previous()[0], b.previous()[1], b.previous()[2], b.previous()[3], left_, () -> previous(view));
+        if (b.play() != null) hot(b.play()[0], b.play()[1], b.play()[2], b.play()[3], left_, () -> toggle(view));
+        if (b.next() != null) hot(b.next()[0], b.next()[1], b.next()[2], b.next()[3], left_, () -> next(view));
+        if (big && b.cover() != null) {
+            // BK: the cover is a remote too - left third previous, middle play/pause, right third next
+            float[] c = b.cover();
+            hot(c[0], c[1], c[2] * 0.30f, c[3], left_, () -> previous(view));
+            hot(c[0] + c[2] * 0.30f, c[1], c[2] * 0.40f, c[3], left_, () -> toggle(view));
+            hot(c[0] + c[2] * 0.70f, c[1], c[2] * 0.30f, c[3], left_, () -> next(view));
+        }
+        setBounds(getPosX(), getPosY(), (int) (width * s) * (reverse ? -1 : 1), (int) (height * s));
     }
 
     private float wideHeight(View view) {

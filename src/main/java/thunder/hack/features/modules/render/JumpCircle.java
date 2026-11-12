@@ -28,7 +28,7 @@ import static thunder.hack.utility.render.Render2DEngine.applyOpacity;
 
 public class JumpCircle extends Module {
     public JumpCircle() {
-        super("JumpCircle", Category.RENDER);
+        super("JumpCircle2", Category.RENDER);
     }
 
     private final Setting<Style> style = new Setting<>("Style", Style.Circle1);

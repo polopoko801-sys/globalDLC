@@ -347,6 +347,11 @@ public class Render2DEngine {
      */
     public static void drawLiquidGlass(DrawContext context, float x, float y, float w, float h, float radius, float alpha) {
         if (alpha <= 0.01f || w <= 0f || h <= 0f) return;
+        // BKClient's liquid glass: refracting edge, fresnel rim and glare, under BK's 50% background veil
+        if (BkLiquidGlass.glass(context, x, y, w, h, radius, BkLiquidGlass.DISTORTION, alpha)) {
+            drawRoundSmooth(context, x, y, w, h, radius, new Color(12, 12, 12, Math.round(255 * 0.5f * alpha)));
+            return;
+        }
         float blur = HudEditor.blurStrength.getValue();
         Color gui = HudEditor.getColor(0);
         if (drawBackdropBlur(context, x, y, w, h, radius, blur / 2.5f, 1f, alpha)) {
@@ -1193,6 +1198,13 @@ public class Render2DEngine {
         fade = MathHelper.clamp(fade, 0f, 1f);
         float op = MathHelper.clamp(blurOpacity, 0f, 1f) * fade;
         if (op <= 0.01f || width <= 0f || height <= 0f) return;
+
+        // BKClient's liquid glass (the panel BK draws behind every HUD element): the shader glass, then BK's
+        // dark-theme background over it at 50%. No drop shadow - BK has none.
+        if (BkLiquidGlass.glass(context, x, y, width, height, radius, BkLiquidGlass.DISTORTION, op)) {
+            renderRoundedQuad(context, new Color(12, 12, 12, Math.round(255 * 0.5f * op)), x, y, x + width, y + height, radius, 6);
+            return;
+        }
 
         // BlurStrength drives how far the panel lifts off the background, instead of doing nothing at all.
         int shadowRadius = (int) MathHelper.clamp(blurStrenth / 4f, 2f, 14f);

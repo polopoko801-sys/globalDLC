@@ -105,6 +105,51 @@ public final class ScreenCapture {
         }
     }
 
+    /** Set by {@link #deferToBlur()}: the GUI's blur point copies the frame instead of blurring it. */
+    private static boolean deferred;
+
+    /**
+     * For screens whose backdrop is itself GUI geometry (the main menu's wallpaper). GUI drawing is deferred on
+     * 1.21.11, so a copy taken while the screen records its elements sees an empty frame - the wallpaper only lands
+     * later, when the GUI renderer replays everything. Call this right after recording the backdrop and then
+     * {@code DrawContext.applyBlur()}: at that split point the renderer has drawn exactly the backdrop, and
+     * {@code MixinGuiRendererBlur} copies the frame into the snapshot there instead of running vanilla's blur.
+     * Glass recorded afterwards samples the snapshot, which by the time it is drawn holds the wallpaper.
+     */
+    public static void deferToBlur() {
+        if (unsupported) return;
+        try {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            Framebuffer fb = mc.getFramebuffer();
+            if (fb == null || fb.getColorAttachment() == null) return;
+            GpuTexture src = fb.getColorAttachment();
+            int w = src.getWidth(0), h = src.getHeight(0);
+            if (w <= 0 || h <= 0) return;
+            if (texture == null || width != w || height != h) recreate(w, h);
+            captured = true;
+            deferred = true;
+        } catch (Throwable t) {
+            deferred = false;
+        }
+    }
+
+    /** Called at the GUI renderer's blur point. @return true when the copy replaced the blur */
+    public static boolean runDeferred() {
+        if (!deferred) return false;
+        deferred = false;
+        try {
+            Framebuffer fb = MinecraftClient.getInstance().getFramebuffer();
+            GpuTexture src = fb.getColorAttachment();
+            int w = src.getWidth(0), h = src.getHeight(0);
+            if (texture == null || width != w || height != h) recreate(w, h);
+            RenderSystem.getDevice().createCommandEncoder().copyTextureToTexture(src, texture, 0, 0, 0, 0, 0, w, h);
+            captured = true;
+        } catch (Throwable t) {
+            thunder.hack.ThunderHack.LOGGER.warn("[Glass] deferred backdrop snapshot failed: {}", t.toString());
+        }
+        return true;
+    }
+
     private static void recreate(int w, int h) {
         close();
         var device = RenderSystem.getDevice();
