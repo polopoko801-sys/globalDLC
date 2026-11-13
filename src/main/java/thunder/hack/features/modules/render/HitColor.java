@@ -33,12 +33,15 @@ public class HitColor extends Module {
     private final Setting<Float> strength = new Setting<>("Strength", 0.5f, 0.05f, 1.0f);
 
     private int applied = VANILLA;
+    private long lastPaint;
 
     @Override
     public void onRender2D(DrawContext context) {
         int alpha = Math.round(255f * (1f - strength.getValue()));
         int argb = alpha << 24 | (hitColor.getValue().getColor() & 0xFFFFFF);
-        if (argb != applied) paint(argb);
+        // repaint now and then too: a resource reload or another mod can put vanilla red back into the texture
+        long now = System.currentTimeMillis();
+        if (argb != applied || now - lastPaint > 1000L) paint(argb);
     }
 
     @Override
@@ -55,5 +58,6 @@ public class HitColor extends Module {
                 image.setColorArgb(u, v, argb);
         texture.upload();
         applied = argb;
+        lastPaint = System.currentTimeMillis();
     }
 }

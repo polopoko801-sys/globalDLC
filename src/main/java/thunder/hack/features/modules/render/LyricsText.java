@@ -53,9 +53,12 @@ public class LyricsText extends Module {
     /** Size on screen - fixed, it does not change with distance. */
     public final Setting<Float> scale = new Setting<>("Scale", 2.6f, 1f, 6f);
     /** How far in front of you a new line is placed, in blocks. */
-    public final Setting<Float> distance = new Setting<>("Distance", 8f, 3f, 30f);
+    /** Screen: words land anywhere on the whole screen. World: pinned to points in front of you, around the crosshair. */
+    public enum Placement {Screen, World}
+    public final Setting<Placement> placement = new Setting<>("Placement", Placement.Screen);
+    public final Setting<Float> distance = new Setting<>("Distance", 8f, 3f, 30f, v -> placement.getValue() == Placement.World);
     /** How far from the centre of the view a line may land: 0 = dead centre, 1 = the edges of the view. */
-    public final Setting<Float> spread = new Setting<>("Spread", 0.55f, 0f, 1f);
+    public final Setting<Float> spread = new Setting<>("Spread", 0.55f, 0f, 1f, v -> placement.getValue() == Placement.World);
     /** How long before its moment a word shows up. */
     public final Setting<Integer> lead = new Setting<>("Lead", 350, 0, 1500);
     /** Shifts everything against Spotify's clock, for a recording that runs early or late. */
@@ -348,9 +351,11 @@ public class LyricsText extends Module {
             return;
         }
         long end = Math.round(at * syllableMs);
-        List<int[]> groups = groupsFor(layout.getValue(), words.size(), random);
+        boolean onScreen = placement.getValue() == Placement.Screen;
+        // word by word on the whole screen: every word gets its own spot
+        List<int[]> groups = groupsFor(onScreen && wordByWord.getValue() ? Layout.Scatter : layout.getValue(), words.size(), random);
         List<Vec3d> anchors = new ArrayList<>(groups.size());
-        for (int g = 0; g < groups.size(); g++) anchors.add(pickSpot());
+        for (int g = 0; g < groups.size(); g++) anchors.add(onScreen ? pickScreenSpot(anchors) : pickSpot());
         int hl = highlight.getValue() ? random.nextInt(words.size()) : -1;
         line = new Line(words, groups, anchors, 0L, end, hl);
     }
@@ -409,6 +414,24 @@ public class LyricsText extends Module {
      * the look direction by up to half the FOV (scaled by {@link #spread}), less vertically since the view is
      * wider than it is tall.
      */
+    /**
+     * A random point anywhere on the screen, as fractions of its width and height (z = -1 marks it as a screen
+     * spot), kept clear of the edges and, where it can be, of the spots the line already uses.
+     */
+    private Vec3d pickScreenSpot(List<Vec3d> taken) {
+        Vec3d best = null;
+        double bestGap = -1;
+        for (int tries = 0; tries < 16; tries++) {
+            Vec3d p = new Vec3d(0.1 + random.nextDouble() * 0.8, 0.1 + random.nextDouble() * 0.75, -1);
+            double gap = Double.MAX_VALUE;
+            for (Vec3d t : taken) gap = Math.min(gap, Math.hypot((p.x - t.x) * 1.6, p.y - t.y));
+            if (leaving != null) for (Vec3d t : leaving.anchors()) gap = Math.min(gap, Math.hypot((p.x - t.x) * 1.6, p.y - t.y));
+            if (gap > 0.22) return p;
+            if (gap > bestGap) { bestGap = gap; best = p; }
+        }
+        return best;
+    }
+
     private Vec3d pickSpot() {
         Vec3d eye = mc.getEntityRenderDispatcher().camera.getCameraPos();
         float fov = mc.options.getFov().getValue();
@@ -445,6 +468,11 @@ public class LyricsText extends Module {
         if (fade <= 0.01f) return false;
         float[][] centres = new float[l.groups().size()][];
         for (int g = 0; g < centres.length; g++) {
+            Vec3d a = l.anchors().get(g);
+            if (a.z < 0) {
+                centres[g] = new float[]{(float) a.x * mc.getWindow().getScaledWidth(), (float) a.y * mc.getWindow().getScaledHeight() - rise};
+                continue;
+            }
             Vec3d screen = Render3DEngine.worldSpaceToScreenSpace(l.anchors().get(g));
             if (screen.z > 0 && screen.z < 1) centres[g] = new float[]{(float) screen.x, (float) screen.y - rise};
         }

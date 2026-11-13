@@ -270,12 +270,6 @@ public final class Rynek extends Module {
         sellTimer.reset();
         jumpTimer.reset();
         ahResetTimer.reset();
-        // The overlay is the point of running this thing — bring it up with the module instead of making
-        // the user go hunt for it in the HUD category. It draws nothing while AutoMarket is off, so
-        // leaving it enabled afterwards costs nothing.
-        if (!ModuleManager.rynekHud.isEnabled())
-            ModuleManager.rynekHud.enable();
-
         // left-clicking (enabling) the module opens the single AutoMarket window (only in-game)
         if (mc.player != null && mc.currentScreen == null)
             mc.setScreen(new RynekScreen());

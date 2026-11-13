@@ -68,8 +68,6 @@ public abstract class MixinHandledScreen<T extends ScreenHandler> extends Screen
     @Inject(method = "render", at = @At("HEAD"))
     private void drawScreenHook(DrawContext context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
         if (Module.fullNullCheck()) return;
-        if (ModuleManager.containerBlur.isEnabled())
-            Render2DEngine.drawBackdropBlur(context, 0, 0, context.getScaledWindowWidth(), context.getScaledWindowHeight(), 0, ModuleManager.containerBlur.blurStrength.getValue());
         for (int i1 = 0; i1 < mc.player.currentScreenHandler.slots.size(); ++i1) {
             Slot slot = mc.player.currentScreenHandler.slots.get(i1);
             if (isPointOverSlot(slot, mouseX, mouseY) && slot.isEnabled()) {

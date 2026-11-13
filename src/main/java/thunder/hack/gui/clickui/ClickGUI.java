@@ -315,7 +315,7 @@ public class ClickGUI extends Screen {
 
         renderSidebar(context, mouseX, mouseY, px, py, panelH);
         renderContent(context, mouseX, mouseY, px, py, panelW, panelH);
-        renderPalette(context, mouseX, mouseY, px, py, panelW, panelH);
+        // colour palette at the bottom removed on request (paletteRects stays empty, so it takes no clicks)
         renderSettings(context, mouseX, mouseY, px, py, panelW, panelH, delta);
 
         matrix.popMatrix();

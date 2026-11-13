@@ -298,7 +298,8 @@ while ($true) {
                 $list = FindLyricsWindow
                 if ($null -ne $list) { $playButton = FindPlayButton $win; $noText = $false; $nowLink = $null; $rowTexts = @{} }
                 elseif ($ownWindow -ne [IntPtr]::Zero -and [LyricsWindow]::IsWindow($ownWindow)) { ShowLyricsInOwnWindow }
-                else { OpenOwnWindow }
+                # never open a browser window of our own any more - only read a Spotify window the user has open
+                # else { OpenOwnWindow }
             }
             if ($null -eq $win) { $out = 'nowindow' }
             elseif ($null -eq $list) { $out = if ($noText -or $noTextSeen) { 'notext' } else { 'nolyrics' } }

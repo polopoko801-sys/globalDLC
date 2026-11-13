@@ -52,7 +52,7 @@ public class TargetESP extends Module {
 
     public enum Design {AmongUs, Skull, Vegas, Marker, SciFi, Simple, Bo, Jeka, Legacy, Nova}
 
-    public enum MarkerMotion {Souls, Crystals}
+    public enum MarkerMotion {Nursultan, Souls, Crystals}
 
     public enum ColorSource {Theme, Custom, Rainbow}
 
@@ -66,7 +66,7 @@ public class TargetESP extends Module {
     private final Setting<Float> scanWidth = new Setting<>("ScanWidth", 30f, 5f, 80f, v -> mode.is(Mode.FragScan));
     private final Setting<Float> scanStrength = new Setting<>("ScanStrength", 1f, 0.1f, 2f, v -> mode.is(Mode.FragScan));
     private final Setting<Design> design =new Setting<>("Design", Design.Marker, v -> mode.is(Mode.Marker));
-    private final Setting<MarkerMotion> animationStyle = new Setting<>("AnimationStyle", MarkerMotion.Souls, v -> mode.is(Mode.Marker));
+    private final Setting<MarkerMotion> animationStyle = new Setting<>("AnimationStyle", MarkerMotion.Nursultan, v -> mode.is(Mode.Marker));
     private final Setting<Boolean> players = new Setting<>("Players", true, v -> targetSource.is(Source.Crosshair));
     private final Setting<Boolean> mobs = new Setting<>("Mobs", true, v -> targetSource.is(Source.Crosshair));
     private final Setting<Float> speed = new Setting<>("Speed", 0.5f, 0.1f, 1.0f);
@@ -227,6 +227,21 @@ public class TargetESP extends Module {
             }
         }
 
+        /** As {@link #billboard}, spun by {@code angle} radians around the view axis. */
+        void billboardRotated(double x, double y, double z, float size, float angle, int argb, boolean flip) {
+            if (size <= 0f || (argb >>> 24) == 0) return;
+            float h = size / 2f, cos = (float) Math.cos(angle), sin = (float) Math.sin(angle);
+            float[][] offsets = {{-h, -h}, {h, -h}, {h, h}, {-h, h}};
+            float[][] uvs = flip ? new float[][]{{0, 0}, {1, 0}, {1, 1}, {0, 1}} : new float[][]{{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+            for (int i = 0; i < 4; i++) {
+                float ox = offsets[i][0], oy = offsets[i][1];
+                corner.set(ox * cos - oy * sin, ox * sin + oy * cos, 0f);
+                rotation.transform(corner);
+                Render3DUtil.vertexTex(buffer, view, (float) x + corner.x, (float) y + corner.y, (float) z + corner.z,
+                        uvs[i][0], uvs[i][1], argb);
+            }
+        }
+
         void flush() {
             Render3DUtil.flush(layer);
         }
@@ -367,6 +382,20 @@ public class TargetESP extends Module {
         float width = t.getWidth() * 1.4f * getSizeMapped();
         int argb = withAlpha(color, (int) (255.0f * animation.value));
 
+        if (animationStyle.is(MarkerMotion.Nursultan)) {
+            // one camera-facing marker on the target's centre, spinning, growing in and turning red on hits
+            float hurt = changeColorOnDamage.getValue() ? MathHelper.clamp(t.hurtTime / 10.0F, 0.0F, 1.0F) : 0.0F;
+            Color tinted = new Color(
+                    (int) MathHelper.lerp(hurt, color.getRed(), 255),
+                    (int) MathHelper.lerp(hurt, color.getGreen(), 40),
+                    (int) MathHelper.lerp(hurt, color.getBlue(), 40));
+            float size = (t.getWidth() + t.getHeight()) * 0.55f * getSizeMapped() * (0.6f + 0.4f * animation.value) * (1.0f - 0.12f * hurt);
+            float angle = (float) Math.toRadians(markerRotation.value);
+            batch.billboardRotated(rel.x, rel.y + t.getHeight() / 2.0, rel.z, size, angle,
+                    withAlpha(tinted, (int) (255.0f * animation.value)), flip);
+            batch.flush();
+            return;
+        }
         if (animationStyle.is(MarkerMotion.Crystals)) {
             for (int i = 0; i < 360; i += 30) {
                 float val = 1.1f - 0.2f * animation.value;
@@ -1052,7 +1081,11 @@ public class TargetESP extends Module {
     private LivingEntity getTarget() {
         if (mc.player == null || mc.world == null) return null;
         if (targetSource.is(Source.Aura)) {
-            Entity active = Aura.target;
+            // BK: AuraRuntime.currentTarget() - whichever aura is running (Kilaura is this client's main one)
+            Entity active = null;
+            if (thunder.hack.core.manager.client.ModuleManager.kilaura.isEnabled()) active = thunder.hack.features.modules.combat.Kilaura.target;
+            if (active == null && thunder.hack.core.manager.client.ModuleManager.aura.isEnabled()) active = Aura.target;
+            if (active == null && thunder.hack.core.manager.client.ModuleManager.maceAura.isEnabled()) active = thunder.hack.core.manager.client.ModuleManager.maceAura.getTarget();
             return active instanceof LivingEntity l && l != mc.player && l.isAlive() && !l.isRemoved() ? l : null;
         }
         if (!players.getValue() && !mobs.getValue()) return null;

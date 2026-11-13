@@ -85,6 +85,8 @@ public final class MaceAura extends Module {
     private final Setting<Boolean> alwaysAxe = new Setting<>("AlwaysAxe", false, v -> steelSlam.getValue());
 
     private LivingEntity target;
+
+    public LivingEntity getTarget() { return target; }
     private float rotYaw, rotPitch;
 
     public enum Rotate { Client, Silent, Off }

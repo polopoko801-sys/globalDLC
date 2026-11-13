@@ -29,6 +29,10 @@ public abstract class MixinEntityRenderer<T extends Entity> {
         if (state instanceof PlayerEntityRenderState && ModuleManager.nameTags.isEnabled()
                 && ModuleManager.nameTags.hideVanillaNames.getValue())
             info.cancel();
+
+        // BK ESP draws its own nameplate for the players it targets
+        if (state instanceof PlayerEntityRenderState player && thunder.hack.features.modules.render.ESP.hidesVanillaName(player.id))
+            info.cancel();
     }
 
     /**
@@ -40,6 +44,8 @@ public abstract class MixinEntityRenderer<T extends Entity> {
      */
     @Inject(method = "updateRenderState", at = @At("RETURN"))
     private void thShadersOutline(T entity, EntityRenderState state, float tickDelta, CallbackInfo info) {
+        if (thunder.hack.features.modules.render.ESP.shouldGlow(entity))
+            state.outlineColor = thunder.hack.features.modules.render.ESP.getGlowColor(entity);
         if (!ModuleManager.shaders.isEnabled()) return;
 
         int color = ModuleManager.shaders.outlineColorFor(entity);

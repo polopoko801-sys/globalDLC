@@ -80,8 +80,6 @@ public class AutoLeave extends Module {
         if (mc.player.getHealth() < leaveHp.getValue() && low_hp.getValue())
             leave(isRu() ? "Ливнул т.к. мало хп" : "Logged out because ur hp is low");
 
-        if (staff.getValue() != LeaveMode.None && ModuleManager.staffBoard.isDisabled() && mc.player.age % 5 == 0)
-            sendMessage(isRu() ? "Включи StaffBoard!" : "Turn on StaffBoard!");
     }
 
     private void leave(String message) {

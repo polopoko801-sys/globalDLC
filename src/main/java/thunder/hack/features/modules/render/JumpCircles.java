@@ -27,7 +27,8 @@ public class JumpCircles extends Module {
         super("JumpCircle", Category.RENDER);
     }
 
-    public enum Style {Liquid, Circle, Bold, Hexagon, Portal, SciFi, Soup}
+    /** BK's styles, then the former JumpCircle2 styles (Classic1-6, Custom, Water). */
+    public enum Style {Liquid, Circle, Bold, Hexagon, Portal, SciFi, Soup, Classic1, Classic2, Classic3, Classic4, Classic5, Classic6, Custom, Water}
 
     public enum EasingMode {Elastic, BackOut, Linear}
 
@@ -36,20 +37,20 @@ public class JumpCircles extends Module {
     private final Setting<Style> style = new Setting<>("Style", Style.Liquid);
     private final Setting<EasingMode> easing = new Setting<>("Easing", EasingMode.Elastic,
             v -> style.is(Style.Liquid) && !advancedLiquidOn());
-    private final Setting<ColorMode> colorMode = new Setting<>("ColorMode", ColorMode.Custom, v -> !hideColors());
+    private final Setting<ColorMode> colorMode = new Setting<>("ColorMode", ColorMode.Custom, v -> !hideColors() && !isClassic());
 
-    private final Setting<Float> liveTime = new Setting<>("LiveTime", 2.5f, 0.5f, 5.0f);
-    private final Setting<Float> scale = new Setting<>("Scale", 75f, 10f, 300f);
-    private final Setting<Float> spinSpeed = new Setting<>("SpinSpeed", 180f, 0f, 360f, v -> !style.is(Style.Liquid));
-    private final Setting<Float> alpha = new Setting<>("Alpha", 128f, 0f, 255f, v -> !style.is(Style.Liquid));
-    private final Setting<Boolean> fadeOut = new Setting<>("FadeOut", true, v -> !style.is(Style.Liquid));
+    private final Setting<Float> liveTime = new Setting<>("LiveTime", 2.5f, 0.5f, 5.0f, v -> !isClassic());
+    private final Setting<Float> scale = new Setting<>("Scale", 75f, 10f, 300f, v -> !isClassic());
+    private final Setting<Float> spinSpeed = new Setting<>("SpinSpeed", 180f, 0f, 360f, v -> !style.is(Style.Liquid) && !isClassic());
+    private final Setting<Float> alpha = new Setting<>("Alpha", 128f, 0f, 255f, v -> !style.is(Style.Liquid) && !isClassic());
+    private final Setting<Boolean> fadeOut = new Setting<>("FadeOut", true, v -> !style.is(Style.Liquid) && !isClassic());
 
     private final Setting<ColorSetting> color = new Setting<>("Color", new ColorSetting(new Color(100, 180, 255).getRGB()),
-            v -> !hideColors() && colorMode.is(ColorMode.Custom));
+            v -> !isClassic() && !hideColors() && colorMode.is(ColorMode.Custom));
     private final Setting<Boolean> useSecondColor = new Setting<>("SecondColor", false,
-            v -> !hideColors() && colorMode.is(ColorMode.Custom) && !(style.is(Style.Liquid) && !advancedLiquidOn()));
+            v -> !isClassic() && !hideColors() && colorMode.is(ColorMode.Custom) && !(style.is(Style.Liquid) && !advancedLiquidOn()));
     private final Setting<ColorSetting> secondColor = new Setting<>("SecondColorPicker", new ColorSetting(new Color(220, 100, 255).getRGB()),
-            v -> !hideColors() && colorMode.is(ColorMode.Custom) && useSecondColor.getValue() && !(style.is(Style.Liquid) && !advancedLiquidOn()));
+            v -> !isClassic() && !hideColors() && colorMode.is(ColorMode.Custom) && useSecondColor.getValue() && !(style.is(Style.Liquid) && !advancedLiquidOn()));
 
     // Liquid / distortion
     private final Setting<Float> distortStrength = new Setting<>("DistortStrength", 1.5f, 0.1f, 3.0f, v -> style.is(Style.Liquid));
@@ -70,6 +71,21 @@ public class JumpCircles extends Module {
     private final Setting<Float> distortSaturation = new Setting<>("Saturation", 0.0f, -1.0f, 1.0f, v -> !hideLiquidDetails());
 
     private final Setting<Boolean> advancedLiquid = new Setting<>("AdvancedLiquid", false, v -> style.is(Style.Liquid));
+
+    // Former JumpCircle2 (Classic, Custom, Water)
+    private final Setting<Boolean> easeOut = new Setting<>("EaseOut", true, v -> isClassic());
+    private final Setting<Float> rotateSpeed = new Setting<>("RotateSpeed", 2f, 0.5f, 5f, v -> isClassic() && !style.is(Style.Water));
+    private final Setting<Float> circleScale = new Setting<>("CircleScale", 1f, 0.5f, 5f, v -> isClassic());
+    private final Setting<Boolean> onlySelf = new Setting<>("OnlySelf", false, v -> isClassic());
+    private final Setting<Boolean> throughWalls = new Setting<>("ThroughWalls", false, v -> isClassic() && !style.is(Style.Water));
+    private final Setting<Float> waveStrength = new Setting<>("WaveStrength", 4f, 0f, 10f, v -> style.is(Style.Water));
+    private final Setting<Float> waterLift = new Setting<>("WaterHeight", 0.12f, 0f, 1f, v -> style.is(Style.Water));
+    private final Setting<Float> waterTint = new Setting<>("WaterTint", 0.18f, 0f, 1f, v -> style.is(Style.Water));
+    private final Setting<ColorSetting> waterColor = new Setting<>("WaterColor", new ColorSetting(0xFFFFFFFF), v -> style.is(Style.Water));
+
+    private boolean isClassic() {
+        return style != null && style.getValue().ordinal() >= Style.Classic1.ordinal();
+    }
 
     private boolean advancedLiquidOn() {
         return advancedLiquid != null && advancedLiquid.getValue();
@@ -92,12 +108,19 @@ public class JumpCircles extends Module {
     @Override
     public void onDisable() {
         circles.clear();
+        classicCircles.clear();
+        classicCache.clear();
         wasJumping = false;
     }
 
     @Override
     public void onUpdate() {
         if (mc.player == null) return;
+        if (isClassic()) {
+            updateClassic();
+            return;
+        }
+        classicCircles.clear();
         boolean jumping = !mc.player.isOnGround() && !mc.player.isClimbing() && !mc.player.isSubmergedInWater();
         if (jumping && !wasJumping) circles.add(new Ring(mc.player.getEntityPos().add(0, 0.01, 0)));
         wasJumping = jumping;
@@ -106,6 +129,10 @@ public class JumpCircles extends Module {
 
     @Override
     public void onRender3D(MatrixStack matrices) {
+        if (isClassic()) {
+            renderClassic3D();
+            return;
+        }
         if (circles.isEmpty() || mc.player == null) return;
         if (style.is(Style.Liquid)) {
             renderLiquid();
@@ -305,5 +332,116 @@ public class JumpCircles extends Module {
             float remaining = MathHelper.clamp((total - elapsed) / total, 0, 1);
             rotationAngle += angularVelocity * dt * remaining;
         }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Former JumpCircle2: Classic1-6, Custom, Water                       */
+    /* ------------------------------------------------------------------ */
+
+    /** How long one classic ring lives, in ms. */
+    private static final long CLASSIC_LIFETIME_MS = 1100L;
+
+    private record ClassicCircle(Vec3d pos, thunder.hack.utility.Timer timer) {
+    }
+
+    private final List<ClassicCircle> classicCircles = new CopyOnWriteArrayList<>();
+    private final List<net.minecraft.entity.player.PlayerEntity> classicCache = new CopyOnWriteArrayList<>();
+    private Identifier custom;
+
+    private void updateClassic() {
+        if (mc.world == null) return;
+        circles.clear();
+        if (style.is(Style.Custom) && custom == null) {
+            try {
+                custom = thunder.hack.utility.ThunderUtility.getCustomImg("circle");
+            } catch (Exception e) {
+                sendMessage(".minecraft -> " + thunder.hack.core.manager.client.ConfigManager.CONFIG_FOLDER_NAME + " -> misc -> images -> circle.png");
+            }
+        }
+
+        for (net.minecraft.entity.player.PlayerEntity pl : mc.world.getPlayers())
+            if (!classicCache.contains(pl) && pl.isOnGround() && (mc.player == pl || !onlySelf.getValue()))
+                classicCache.add(pl);
+
+        classicCache.forEach(pl -> {
+            if (pl != null && !pl.isOnGround()) {
+                // only a real jump: leaving the ground while rising, not walking off a ledge
+                boolean rising = pl.getY() - pl.lastY > 0.02 || (pl == mc.player && pl.getVelocity().y > 0.1);
+                if (rising)
+                    classicCircles.add(new ClassicCircle(new Vec3d(pl.getX(), Math.floor(pl.lastY) + 0.03, pl.getZ()), new thunder.hack.utility.Timer()));
+                classicCache.remove(pl);
+            }
+        });
+
+        classicCircles.removeIf(c -> c.timer().passedMs(CLASSIC_LIFETIME_MS));
+    }
+
+    private Identifier classicTexture() {
+        if (style.is(Style.Custom)) return custom;
+        return thunder.hack.utility.render.TextureStorage.jumpCircles[style.getValue().ordinal() - Style.Classic1.ordinal()];
+    }
+
+    /** Flat textured rings on the ground, one quad each. */
+    private void renderClassic3D() {
+        if (classicCircles.isEmpty() || mc.player == null || style.is(Style.Water)) return;
+        final Identifier texture = classicTexture();
+        if (texture == null) return;
+
+        for (ClassicCircle c : classicCircles) {
+            long passed = c.timer().getPassedTimeMs();
+            float t = passed / (float) CLASSIC_LIFETIME_MS;
+            if (t < 0f || t >= 1f) continue;
+
+            float grow = easeOut.getValue() ? thunder.hack.utility.render.animation.Easing.CubicOut.applyClamped(t) : t;
+            float radius = circleScale.getValue() * (0.4f + grow * 1.6f);
+            float fade = 1f - t * t;
+
+            Color tint = thunder.hack.utility.render.Render2DEngine.applyOpacity(HudEditor.getColor(0), fade);
+            double angle = passed / 1000.0 * rotateSpeed.getValue();
+            CloudanBatchRenderer.groundSprite(texture, c.pos(), radius, angle, tint, throughWalls.getValue());
+        }
+    }
+
+    /** Water style: one ripple spreading over the ground, drawn with the per-pixel water shader in ring mode. */
+    @Override
+    public void onRender2D(net.minecraft.client.gui.DrawContext context) {
+        if (!style.is(Style.Water) || classicCircles.isEmpty() || mc.player == null) return;
+        final int seg = 72;
+        int rgb = waterColor.getValue().getColor();
+
+        for (ClassicCircle c : classicCircles) {
+            float t = c.timer().getPassedTimeMs() / (float) CLASSIC_LIFETIME_MS;
+            if (t < 0f || t >= 1f) continue;
+            float grow = easeOut.getValue() ? thunder.hack.utility.render.animation.Easing.CubicOut.applyClamped(t) : t;
+            float r = circleScale.getValue() * (0.15f + grow * 1.8f);
+            float w = circleScale.getValue() * (0.16f + 0.1f * (1f - grow));
+            float fade = (float) Math.pow(1f - t, 1.3);
+            float inner = Math.max(0.01f, r - w), outer = r + w;
+
+            Vec3d centre = c.pos().add(0, waterLift.getValue(), 0);
+            float[][] in = new float[seg + 1][], out = new float[seg + 1][];
+            for (int i = 0; i <= seg; i++) {
+                double a = Math.PI * 2 * i / seg;
+                in[i] = project(centre, Math.cos(a) * inner, Math.sin(a) * inner);
+                out[i] = project(centre, Math.cos(a) * outer, Math.sin(a) * outer);
+            }
+            List<thunder.hack.utility.render.FxSurface.V> verts = new java.util.ArrayList<>();
+            for (int i = 0; i < seg; i++) {
+                if (in[i] == null || in[i + 1] == null || out[i] == null || out[i + 1] == null) continue;
+                float u0 = (float) (Math.PI * 2 * i / seg * r), u1 = (float) (Math.PI * 2 * (i + 1) / seg * r);
+                verts.add(new thunder.hack.utility.render.FxSurface.V(in[i][0], in[i][1], u0, 0f));
+                verts.add(new thunder.hack.utility.render.FxSurface.V(out[i][0], out[i][1], u0, 1f));
+                verts.add(new thunder.hack.utility.render.FxSurface.V(out[i + 1][0], out[i + 1][1], u1, 1f));
+                verts.add(new thunder.hack.utility.render.FxSurface.V(in[i + 1][0], in[i + 1][1], u1, 0f));
+            }
+            float[] op = new float[verts.size()];
+            java.util.Arrays.fill(op, Math.min(1f, fade * waveStrength.getValue() / 4f));
+            thunder.hack.utility.render.FxSurface.draw(context, thunder.hack.utility.render.FxSurface.Kind.Water, verts, op, rgb, waterTint.getValue(), true);
+        }
+    }
+
+    private static float[] project(Vec3d centre, double dx, double dz) {
+        Vec3d s = Render3DEngine.worldSpaceToScreenSpace(centre.add(dx, 0, dz));
+        return s.z > 0 && s.z < 1 ? new float[]{(float) s.x, (float) s.y} : null;
     }
 }

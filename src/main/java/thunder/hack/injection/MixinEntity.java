@@ -99,6 +99,8 @@ public abstract class MixinEntity implements IEntity {
         if (shaders.isEnabled()) {
             cir.setReturnValue(shaders.shouldRender((Entity) (Object) this));
         }
+        if (!Boolean.TRUE.equals(cir.getReturnValue()) && thunder.hack.features.modules.render.ESP.shouldGlow((Entity) (Object) this))
+            cir.setReturnValue(true);
     }
 
     @Inject(method = "isOnFire", at = @At("HEAD"), cancellable = true)
